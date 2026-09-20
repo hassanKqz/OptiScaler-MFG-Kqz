@@ -8,6 +8,7 @@
 #include <proxies/Ntdll_Proxy.h>
 #include <proxies/KernelBase_Proxy.h>
 #include <hooks/Xell_Hooks.h>
+#include <proxies/XeLLUnLock.h>
 
 #include <xell.h>
 #include <xell_d3d12.h>
@@ -255,6 +256,11 @@ class XeLLProxy
             return false;
 
         _dll = libxellModule;
+
+        // libxess_fg forwards the generated frame count to libxell, whose own
+        // argument check rejects anything above 3 (4X). Raise it on the mapped
+        // image, gated on XeFG\UnlockMFG; the DLL on disk is never modified.
+        XeLLUnlock::Apply(_dll);
 
         {
             ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
