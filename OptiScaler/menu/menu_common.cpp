@@ -7589,7 +7589,7 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
     // Main menu window
     if (windowTitle.empty())
     {
-        windowTitle = StrFmt("evairx/OptiScalerMFG %s - %s %s %s %s", OPTI_VERSION, state.gameExe.c_str(),
+        windowTitle = StrFmt("OptiScalerMFG %s (hassanKqz build, based on evairx) - %s %s %s %s", OPTI_VERSION, state.gameExe.c_str(),
                              state.gameName.empty() ? "" : StrFmt("- %s", state.gameName.c_str()).c_str(),
                              (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
     }
