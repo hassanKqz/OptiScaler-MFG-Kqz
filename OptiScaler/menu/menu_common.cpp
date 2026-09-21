@@ -3216,9 +3216,9 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     outputOptions = {
         { FGOutput::NoFG, "None" },
-        { FGOutput::FSRFG, "AMD FSR FG 2X", "FSR3/4-FG, fixed at one interpolated frame (2X)\n\nFSR4-FG may be selected automatically on supported hardware" },
-        { FGOutput::DLSSG, "NVIDIA DLSSG OptiFG 2X", "Autonomous OptiScaler DLSSG backend, fixed at one generated frame (2X)\n\nNVIDIA native MFG unlock is not used by this backend" },
-        { FGOutput::XeFG, "XeFG", "Intel XeSS 3 frame generation\n\nSupports 2X through 6X when reported by the XeFG runtime\n\nEnable UI Composition if HUD ghosting" },
+        { FGOutput::FSRFG, "AMD FSR FG 2X", "FSR3/4-FG, fixed at one interpolated frame (2X)\n\nFSR4-FG may be selected automatically on supported hardware\n\nNeed more than 2X? Keep FG Input as is and pick XeFG as FG Output" },
+        { FGOutput::DLSSG, "NVIDIA DLSSG OptiFG 2X", "Autonomous OptiScaler DLSSG backend, fixed at one generated frame (2X)\n\nNVIDIA native MFG unlock is not used by this backend\n\nNeed more than 2X? Keep FG Input as is and pick XeFG as FG Output" },
+        { FGOutput::XeFG, "XeFG", "Intel XeSS 3 frame generation\n\nSupports 2X and up, as far as the XeFG runtime reports (6X+ appears as a Custom slot)\n\nWorks with DLSSG, FSR 3.1 FG and other FG Inputs, so this is the way to go above 6X\n\nAbove 4X VSync or a frame cap is required\n\nEnable UI Composition if HUD ghosting" },
     };
 
     // clang-format on
@@ -3251,7 +3251,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     if (mfgUnlockerActive)
     {
         const std::string unlockerReason =
-            "Native MFG unlocker is active. Disable it to use autonomous frame generation.";
+            "Native MFG unlocker is active. Disable it to use XeFG / FSR FG (XeFG is the only way above 6X).";
 
         inputOptions[optiFgIndex].set_disabled(true, unlockerReason);
         outputOptions[fsrfgOutputIndex].set_disabled(true, unlockerReason);
@@ -3440,7 +3440,8 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
                            "Only available with the game's own DLSS-G (FG Output: None).\n"
                            "While enabled, autonomous generation (OptiFG / XeSS MFG / FSR FG) stays disabled to avoid conflicts.\n"
                            "- RTX 40 (Ada): up to 6X with Blackwell kernel retargeting.\n"
-                           "- RTX 30 / 20 (Ampere/Turing): up to 6X via SM86/X5-X6 routing when the sidecar backend is installed.");
+                           "- RTX 30 / 20 (Ampere/Turing): up to 6X via SM86/X5-X6 routing when the sidecar backend is installed.\n"
+                           "6X is the ceiling of the DLSS-G runtime. For more, turn this off and use FG Input: DLSSG + FG Output: XeFG.");
 
             // Status / Restart message
             if (activeMfgVal != unlockMfg)
@@ -3504,7 +3505,8 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
                         ImGui::EndCombo();
                     }
                     ImGui::PopItemWidth();
-                    ShowHelpMarker("Select desired frame generation multiplier (2X up to 6X). Pacing and ceiling uncap apply automatically in DLSS-G.");
+                    ShowHelpMarker("Select desired frame generation multiplier (2X up to 6X). Pacing and ceiling uncap apply automatically in DLSS-G.\n\n"
+                                   "6X is the runtime ceiling. For more, use FG Input: DLSSG + FG Output: XeFG with this unlocker off.");
 
                     bool qGuard = config->FGDLSSGQualityGuard.value_or_default();
                     if (ImGui::Checkbox("Quality Guard (Anti-Flicker)", &qGuard))
@@ -3605,7 +3607,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
                         ImGui::EndCombo();
                     }
                     ImGui::PopItemWidth();
-                    ShowHelpMarker("Select desired frame generation multiplier for RTX 20/30 (2X up to 6X).\n\n"
+                    ShowHelpMarker("Select desired frame generation multiplier for RTX 20/30 (2X up to 6X, the runtime ceiling; for more use FG Output: XeFG).\n\n"
                                    "5X/6X need a hash-pinned Native 0.2.4 loader; the loader is patched automatically and\n"
                                    "unverified on GPU. If the hash or anchors do not match, it falls back to the proven 4X path.");
 
