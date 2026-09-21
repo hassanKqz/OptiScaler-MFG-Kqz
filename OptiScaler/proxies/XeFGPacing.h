@@ -255,6 +255,13 @@ using PresentFn = int64_t (*)(void*, uint32_t, uint32_t, uint64_t, void*, void*,
 // How many real frame periods to keep for the median.
 constexpr int32_t SampleCount = 15;
 
+// Highest generated-frame count (multiplier - 1) the pacing will touch. This has to be the same
+// bound XeFGUnlock reports (Config::XeFGMaxInterpolations). It used to be a literal 5 - the
+// stock provider's 6X ceiling - which meant that once the unlock raised the count past 6X every
+// burst skipped both hooks below and went out back to back, unpaced: a high FPS counter with
+// motion that looks like the real frame rate.
+constexpr uint64_t MaxPacedCount = static_cast<uint64_t>(Config::XeFGMaxInterpolations);
+
 inline uint8_t* g_base = nullptr;
 inline PresentFn g_native = nullptr;
 inline bool g_enabled = false;
@@ -715,8 +722,8 @@ inline void TryPace(void* ctx, void* arg5, void* arg6, uint64_t arg7, bool isLas
     auto* burst = reinterpret_cast<uint8_t*>(arg5) - 0x38;
     const uint64_t count = *reinterpret_cast<uint64_t*>(burst + 8);
 
-    // The provider caps the multiplier at 6X, so count = 5 is the ceiling.
-    if (count < 1 || count > 5)
+    // The ceiling is whatever the unlock allows (see MaxPacedCount), not the stock provider's 6X.
+    if (count < 1 || count > MaxPacedCount)
         return;
 
     g_lastMultiplier = static_cast<int64_t>(count) + 1;
@@ -807,9 +814,9 @@ inline void* TsDetour(void* a1, int64_t* out, void* lookup, void* timing, uint32
 {
     void* const result = g_tsNative(a1, out, lookup, timing, index, countPlus1);
 
-    // index 0 is the real frame and never reaches the provider's tail; the
-    // provider caps the multiplier at 6X, so index 5 is the ceiling.
-    if (out == nullptr || timing == nullptr || index == 0 || index > 5 || countPlus1 < 2)
+    // index 0 is the real frame and never reaches the provider's tail; the highest index is the
+    // highest generated-frame count the unlock allows (see MaxPacedCount).
+    if (out == nullptr || timing == nullptr || index == 0 || index > MaxPacedCount || countPlus1 < 2)
         return result;
 
     const int64_t median = *reinterpret_cast<const int64_t*>(reinterpret_cast<const uint8_t*>(timing) + 8);
