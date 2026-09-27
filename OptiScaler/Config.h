@@ -261,17 +261,21 @@ class Config
     // Off preserves the v0.2.0 post-upscale placement.
     CustomOptional<bool> DlssNrRunBeforeSr { false };
     CustomOptional<bool> DlssNrFinishedPicture { false };
-    // Fit the scene-to-finished HDR luminance response for early-generated residuals. Opt-in.
-    CustomOptional<bool> DlssNrHdrTransfer { false };
-    // Generate NR before SR, upscale its signed contribution with a private SR feature,
+    // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
     // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
     CustomOptional<bool> DlssNrDeferredDlss { false };
-    // Private carrier only: 0 DLSS (legacy default), 1 FSR 2.2, 2 FidelityFX runtime, 3 XeSS.
-    CustomOptional<int> DlssNrPrivateUpscaler { 0 };
-    // Legacy INI alias: with RunBeforeSR, enables the same private SR edit path as DeferredDLSS.
+    // Experimental: with RunBeforeSR and the game's Ray Reconstruction both on, run NR before SR
+    // but leave the colour input untouched, then add the model's edit back onto the RR+SR output
+    // so it survives RR's denoise. v2 carries the edit as an MV-reprojected temporal accumulator
+    // (the per-frame ray-trace noise term averages to zero; the enhancement persists). Inert
+    // unless RunBeforeSR + RR are both active. Opt-in.
     CustomOptional<bool> DlssNrResidualAcrossRr { false };
-    // RR residual history blend before private upscaling; v0.7.7 default, clamped to 0.01..1.
+    // v2 history blend rate for the accumulator above, 0.01..1. Lower = stabler but slower to
+    // appear; 1.0 = no accumulation (each frame's raw residual, which flickers). Default 0.08.
     CustomOptional<float> DlssNrResidualAcrossRrBlend { 0.08f };
+    CustomOptional<bool> DlssNrResidualFg { false };
+    CustomOptional<uint32_t> DlssNrPrecision { 0 }; // 0 NVIDIA FP8 (default), 4 Experimental NVFP4 hybrid
+    CustomOptional<bool> DlssNrResidualFgApproxCamera { false };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
@@ -338,13 +342,12 @@ class Config
     // default. See dlssnr/design/frame-hold.md.
     CustomOptional<bool> DlssNrHoldFrame { false };
 
-
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
 
-    // Below 100%: 0 classic, 1 spatial matched residual, 2 private DLSS SR matched residual.
-    // Mode 2 requires post-upscale processing through DX12 (including finished-picture NR).
+    // How a model that worked below the frame's size is brought back. 0 classic, 1 matched
+    // residual. Only has an effect when Model resolution is under 100%.
     CustomOptional<uint32_t> DlssNrTransfer { 1 };
 
     // Measure the white point from the frame instead of taking it from the slider. On a frame the
@@ -358,7 +361,6 @@ class Config
     //
     // The slider is the supported control until the loop is broken. This stays as an opt-in so the
     // behaviour can still be looked at.
-
 
     // Take the white point from the game's own exposure texture instead of measuring or guessing.
     // Off by default until it has been seen to work in more than one game.
@@ -471,8 +473,8 @@ class Config
 
     CustomOptional<bool> DlssNrScanMeter { false };
 
-    CustomOptional<float> DlssNrScanAnchorValue { 0.0f };       // legacy single anchor, migrated then unused
-    CustomOptional<float> DlssNrScanAnchorWhitePoint { 0.0f };  // legacy single anchor, migrated then unused
+    CustomOptional<float> DlssNrScanAnchorValue { 0.0f };      // legacy single anchor, migrated then unused
+    CustomOptional<float> DlssNrScanAnchorWhitePoint { 0.0f }; // legacy single anchor, migrated then unused
 
     // The multi-point anchor table, serialised as "scan:white;scan:white;..." ascending. See
     // dlssnr/design/multi-point-anchoring.md. Replaces the single pair above; a pre-existing single
@@ -486,12 +488,6 @@ class Config
     // says which. Rather than guess and be silently wrong in half the games, this is one click: if
     // the picture moves the wrong way, flip it.
     CustomOptional<bool> DlssNrScanInverted { false };
-
-
-
-
-
-
 
     // The trim on an exposure-derived white point, kept apart from the manual divisor on purpose.
     //
@@ -536,17 +532,9 @@ class Config
     // folder is cleared at the start of each run, so it holds one session's worth and never grows.
     CustomOptional<bool> DlssNrAutoCapture { true };
 
-
-
-
-
     // Multiplies the (auto or manual) white point before the encode: what the model considers "white".
     // Higher means highlights sit lower on the curve and the model treats them as less extreme.
     CustomOptional<float> DlssNrWhitePointScale { 1.0f };
-
-
-
-
 
     // --- end DLSS 5 Neural Rendering -------------------------------------------------------------
 
@@ -570,6 +558,9 @@ class Config
     CustomOptional<uint32_t> DLSSDRenderPresetBalanced { 0 };
     CustomOptional<uint32_t> DLSSDRenderPresetPerformance { 0 };
     CustomOptional<uint32_t> DLSSDRenderPresetUltraPerformance { 0 };
+
+    // Nukems
+    CustomOptional<bool> NvngxFGMakeDepthCopy { false };
 
     // Libraries
     CustomOptional<std::wstring, NoDefault> MainDllPath;
@@ -806,7 +797,16 @@ class Config
 
     // Frame Generation
     CustomOptional<FGInput> FGInput { FGInput::NoFG };
+    CustomOptional<bool> ExternalFrameGeneration { false };
+    CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
+    CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels;
+    // Ampere/Turing (SM86/SM75) MFG unlocker — sideloads the dlssg_for_sm86 proxy
+    CustomOptional<bool> FGDLSSGAmpereMfgUnlock { false };
+    CustomOptional<int> FGDLSSGAmpereMfgMaxFrames { 3 };                // 0-3: 0=runtime default (3X), 1=2X, 2=3X, 3=4X
+    CustomOptional<std::string, NoDefault> FGDLSSGAmpereMfgKernelImage; // Auto / PTX / Cubin
+    CustomOptional<bool> FGDLSSGAmpereMfgHardwareBilinear { false };    // Optional approximate sampling (SM86 only)
     CustomOptional<FGOutput> FGOutput { FGOutput::NoFG };
+    CustomOptional<FGNvngxReplacement> FGNvngxReplacement { FGNvngxReplacement::None };
     CustomOptional<bool> FGDrawUIOverFG { false };
     CustomOptional<bool> FGUIPremultipliedAlpha { true };
     CustomOptional<bool> FGDisableHudless { false };
@@ -926,6 +926,12 @@ class Config
     CustomOptional<bool> FGDLSSGOverrideForceDMFG { false };   // Overrides game's DLSSG mode to Dynamic
     CustomOptional<bool> FGDLSSGForceDMFG { false };           // Overrides Opti's DLSSG mode to Dynamic
     CustomOptional<float> FGDLSSGFramerateTargetDMFG { 0.0f }; // 0.0 means auto-detects the display refresh rate
+
+    // As per
+    // https://github.com/artur-graniszewski/dlss-enabler-main/blob/a92464d468eb0d91ae17befa66c6bf6229f20b9f/Utils/DlssgProxy.cpp#L1033
+    CustomOptional<uint32_t> NvngxFGDispatchFlags { 0x10000000 }; // IGNORE_UI_TEXTURE
+    CustomOptional<bool> NvngxFGShowDebug { false };
+    CustomOptional<bool> NvngxFGDisableHudless { false };
 
     // fakenvapi
     CustomOptional<bool> UseFakenvapi { true };

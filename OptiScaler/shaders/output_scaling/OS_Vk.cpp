@@ -48,9 +48,7 @@ OS_Vk::OS_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalD
     // 1. Create Base Resources
     CreateSampler(VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
-    uint32_t constantSize = (ActiveScaler() == Scaler::FSR1)
-                                ? sizeof(UpscaleShaderConstants)
-                                : sizeof(Constants);
+    uint32_t constantSize = (ActiveScaler() == Scaler::FSR1) ? sizeof(UpscaleShaderConstants) : sizeof(Constants);
     CreateConstantBuffer(constantSize);
 
     // 2. Setup Layouts & Pools
@@ -124,28 +122,22 @@ OS_Vk::OS_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalD
 
 bool OS_Vk::Dispatch(VkCommandBuffer InCmdList, const VkImageInfo& InResourceView, const VkImageInfo& OutResourceView)
 {
-    auto* feature = State::Instance().currentFeature;
-    if (!feature)
-        return false;
-    return DispatchWithSize(InCmdList, InResourceView, OutResourceView, feature->TargetWidth(), feature->TargetHeight(),
-                            feature->DisplayWidth(), feature->DisplayHeight());
-}
-
-bool OS_Vk::DispatchResources(VkCommandBuffer commandList, const VkImageInfo& source, const VkImageInfo& output)
-{
-    return DispatchWithSize(commandList, source, output, source.Width, source.Height, output.Width, output.Height);
-}
-
-bool OS_Vk::DispatchWithSize(VkCommandBuffer InCmdList, const VkImageInfo& InResourceView,
-                            const VkImageInfo& OutResourceView, uint32_t srcW, uint32_t srcH,
-                            uint32_t dstW, uint32_t dstH)
-{
     if (!_init || InCmdList == VK_NULL_HANDLE)
         return false;
 
+    // The resample sizes. Output Scaling and the Magnifier keep reading them from the current feature
+    // (unchanged). A Neural Rendering instance (_scalerOverride set) sizes from the passed images
+    // instead: NR's supersample up/down legs resample native<->super-native, nothing to do with the
+    // feature's render/display sizes. The group count below already uses OutResourceView.
+    const bool nr = _scalerOverride != Scaler::Count;
+    const uint32_t srcW = nr ? InResourceView.Width : State::Instance().currentFeature->TargetWidth();
+    const uint32_t srcH = nr ? InResourceView.Height : State::Instance().currentFeature->TargetHeight();
+    const uint32_t dstW = nr ? OutResourceView.Width : State::Instance().currentFeature->DisplayWidth();
+    const uint32_t dstH = nr ? OutResourceView.Height : State::Instance().currentFeature->DisplayHeight();
+
     // Update Constants
-    FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3,
-               srcW, srcH, srcW, srcH, dstW, dstH);
+    FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3, srcW, srcH, srcW,
+               srcH, dstW, dstH);
 
     constants.srcWidth = srcW;
     constants.srcHeight = srcH;

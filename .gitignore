@@ -419,12 +419,6 @@ FodyWeavers.xsd
 *.dll
 
 !external/directx_agility_sdk/lib/D3D12Core.dll
-!external/dlss/*.dll
-!external/streamline_bin/*.dll
-!OptiScaler/dlssg_sm86/*.dll
-
-# NR runtime: user-supplied / fetched by CI, over GitHub's 100 MB file limit
-external/dlss/nvngx_dlssnr.dll
 
 # Fortran module files
 *.mod
@@ -448,12 +442,12 @@ CyberFSR/imgui.ini
 /OptiScaler/misc/Telemetry.h
 release
 
-# Local dependency/download caches.
+# Official NVIDIA SDK download/extraction cache; provenance is in redist/streamline/manifest.json.
 /.dependencies/
 /OptiScaler/streamline/
 
 .agents/
 .logs/
 
-# Local runtime experiments (not packaged)
+# Temp dlssg_sm86 files
 dlssg_for_sm86/

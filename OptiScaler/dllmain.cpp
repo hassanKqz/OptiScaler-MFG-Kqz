@@ -26,6 +26,7 @@
 #include "inputs/FG/FSR3_Dx12_FG.h"
 
 #include <fsr4/FSR4ModelSelection.h>
+#include <framegen/dlssg/AmpereMfgLoader.h>
 
 #include <hooks/Dxgi_Hooks.h>
 #include <hooks/D3D11_Hooks.h>
@@ -1643,14 +1644,16 @@ static void CheckQuirks(bool isNvidia)
     }
 
     // if (!Config::Instance()->DxgiFactoryWrapping.has_value() && Config::Instance()->LoadReShade.value_or_default() &&
-    //     quirks & GameQuirk::CreateD3D12DeviceForLuma && State::Instance().activeFgInput != FGInput::NoFG)
+    //     quirks & GameQuirk::CreateD3D12DeviceForLuma && State::Instance().activeFgInput != FGInput::NoFG &&
+    //     State::Instance().activeFgInput != FGInput::NvngxFG)
     //{
     //     Config::Instance()->DxgiFactoryWrapping.set_volatile_value(true);
     //     State::Instance().detectedQuirks.push_back("Factory wrapping enabled due to delayed ReShade + FG");
     //     LOG_INFO("Factory wrapping enabled due to delayed ReShade + FG");
     // }
 
-    if (Config::Instance()->LoadSpecialK.value_or_default() && State::Instance().activeFgInput != FGInput::NoFG)
+    if (Config::Instance()->LoadSpecialK.value_or_default() && State::Instance().activeFgInput != FGInput::NoFG &&
+        State::Instance().activeFgInput != FGInput::NvngxFG)
     {
         Config::Instance()->LoadSpecialK.set_volatile_value(false);
         State::Instance().detectedQuirks.push_back("FG Inputs are enabled, LoadSpecialK disabled");
@@ -1899,6 +1902,17 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         NtdllProxy::Init();
         KernelBaseProxy::Init();
         Kernel32Proxy::Init();
+
+        State::Instance().activeFgInput = Config::Instance()->FGInput.value_or_default();
+        State::Instance().activeFgOutput = Config::Instance()->FGOutput.value_or_default();
+        State::Instance().activeFgNvngx = Config::Instance()->FGNvngxReplacement.value_or_default();
+
+        // Ensure valid FG configuration
+        if (State::Instance().activeFgInput != FGInput::NvngxFG && State::Instance().activeFgOutput != FGOutput::DLSSG)
+            State::Instance().activeFgNvngx = FGNvngxReplacement::None;
+
+        if (State::Instance().activeFgInput == FGInput::NvngxFG)
+            State::Instance().activeFgOutput = FGOutput::NoFG;
 
         // Check for Wine
         spdlog::info("");

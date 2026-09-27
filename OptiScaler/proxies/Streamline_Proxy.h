@@ -70,16 +70,18 @@ class StreamlineProxy
             return true;
 
         auto owner = State::GetOwner();
-        State::DisableChecks(owner);
+        if (State::Instance().activeFgOutput == FGOutput::DLSSG &&
+            State::Instance().activeFgNvngx != FGNvngxReplacement::None)
+        {
+            State::DisableChecks(owner, "sl.");
+        }
+        else
+        {
+            State::DisableChecks(owner);
+        }
 
         std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
         localSlPath = localSlPath / L"streamline"; // Hardcoded streamline folder
-        if (!std::filesystem::exists(localSlPath))
-        {
-            auto optiSl = std::filesystem::path(Config::Instance()->MainDllPath.value()) / L"OptiScaler" / L"streamline";
-            if (std::filesystem::exists(optiSl))
-                localSlPath = optiSl;
-        }
 
         std::filesystem::path slInterposerPath = localSlPath / L"sl.interposer.dll";
         LOG_INFO(L"Trying to load sl.interposer.dll from dll path: {}", slInterposerPath.wstring());
@@ -92,23 +94,7 @@ class StreamlineProxy
             State::Instance().optiSlInterposer = _dll;
             auto slCommonPath = localSlPath / L"sl.common.dll";
             State::Instance().optiSlCommon = NtdllProxy::LoadLibraryExW_Ldr(slCommonPath.c_str(), NULL, NULL);
-
-            std::filesystem::path dlssgPath = localSlPath / L"nvngx_dlssg.dll";
-            if (!std::filesystem::exists(dlssgPath))
-            {
-                if (State::Instance().NVNGX_DLSSG_Path.has_value() &&
-                    std::filesystem::exists(State::Instance().NVNGX_DLSSG_Path.value()))
-                {
-                    dlssgPath = State::Instance().NVNGX_DLSSG_Path.value();
-                }
-                else
-                {
-                    auto optiDlssg = std::filesystem::path(Config::Instance()->MainDllPath.value()) / L"OptiScaler" / L"nvngx_dlssg.dll";
-                    if (std::filesystem::exists(optiDlssg))
-                        dlssgPath = optiDlssg;
-                }
-            }
-
+            auto dlssgPath = localSlPath / L"nvngx_dlssg.dll"; // TODO: maybe some search?
             State::Instance().optiDLSSG = NtdllProxy::LoadLibraryExW_Ldr(dlssgPath.c_str(), NULL, NULL);
 
             return HookStreamline(_dll);
@@ -179,26 +165,13 @@ class StreamlineProxy
         return result;
     }
 
-    static std::filesystem::path ResolveSlLibraryPath(const std::wstring& filename)
-    {
-        std::filesystem::path basePath(Config::Instance()->MainDllPath.value());
-        auto directPath = basePath / L"streamline" / filename;
-        if (std::filesystem::exists(directPath))
-            return directPath;
-
-        auto optiPath = basePath / L"OptiScaler" / L"streamline" / filename;
-        if (std::filesystem::exists(optiPath))
-            return optiPath;
-
-        return directPath;
-    }
-
     static HMODULE HookStreamlineDLSSG()
     {
         spdlog::info("");
 
-        auto dlssgPath = ResolveSlLibraryPath(L"sl.dlss_g.dll");
-        auto dlssg = NtdllProxy::LoadLibraryExW_Ldr(dlssgPath.c_str(), NULL, NULL);
+        std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
+        localSlPath = localSlPath / L"streamline" / L"sl.dlss_g.dll";
+        auto dlssg = NtdllProxy::LoadLibraryExW_Ldr(localSlPath.c_str(), NULL, NULL);
 
         // if already hooked
         if (_slDLSSGSetOptions != nullptr)
@@ -230,8 +203,9 @@ class StreamlineProxy
     {
         spdlog::info("");
 
-        auto reflexPath = ResolveSlLibraryPath(L"sl.reflex.dll");
-        auto reflex = NtdllProxy::LoadLibraryExW_Ldr(reflexPath.c_str(), NULL, NULL);
+        std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
+        localSlPath = localSlPath / L"streamline" / L"sl.reflex.dll";
+        auto reflex = NtdllProxy::LoadLibraryExW_Ldr(localSlPath.c_str(), NULL, NULL);
 
         // if already hooked
         if (_slReflexGetState != nullptr)
@@ -268,8 +242,9 @@ class StreamlineProxy
     {
         spdlog::info("");
 
-        auto pclPath = ResolveSlLibraryPath(L"sl.pcl.dll");
-        auto pcl = NtdllProxy::LoadLibraryExW_Ldr(pclPath.c_str(), NULL, NULL);
+        std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
+        localSlPath = localSlPath / L"streamline" / L"sl.pcl.dll";
+        auto pcl = NtdllProxy::LoadLibraryExW_Ldr(localSlPath.c_str(), NULL, NULL);
 
         // if already hooked
         if (_slPCLSetMarker != nullptr)
@@ -343,8 +318,10 @@ class StreamlineProxy
         ok &= ResolveActiveFeature(sl::kFeatureReflex, "slReflexGetState", _slReflexGetState, state.optiSlReflex);
         ok &= ResolveActiveFeature(sl::kFeatureReflex, "slReflexSleep", _slReflexSleep, state.optiSlReflex);
         ok &= ResolveActiveFeature(sl::kFeatureReflex, "slReflexSetOptions", _slReflexSetOptions, state.optiSlReflex);
-        ResolveActiveFeature(sl::kFeatureReflex, "slReflexSetCameraData", _slReflexSetCameraData, state.optiSlReflex, false);
-        ResolveActiveFeature(sl::kFeatureReflex, "slReflexGetPredictedCameraData", _slReflexGetPredictedCameraData, state.optiSlReflex, false);
+        ResolveActiveFeature(sl::kFeatureReflex, "slReflexSetCameraData", _slReflexSetCameraData, state.optiSlReflex,
+                             false);
+        ResolveActiveFeature(sl::kFeatureReflex, "slReflexGetPredictedCameraData", _slReflexGetPredictedCameraData,
+                             state.optiSlReflex, false);
         ResolveActiveFeature(sl::kFeaturePCL, "slPCLGetState", _slPCLGetState, state.optiSlPCL, false);
         ok &= ResolveActiveFeature(sl::kFeaturePCL, "slPCLSetMarker", _slPCLSetMarker, state.optiSlPCL);
         ok &= ResolveActiveFeature(sl::kFeaturePCL, "slPCLSetOptions", _slPCLSetOptions, state.optiSlPCL);
@@ -385,7 +362,6 @@ class StreamlineProxy
         auto nvngxDlssPath = Util::FindFilePath(exePath, "nvngx_dlss.dll");
         auto nvngxDlssDPath = Util::FindFilePath(exePath, "nvngx_dlssd.dll");
         auto nvngxDlssGPath = Util::FindFilePath(exePath, "nvngx_dlssg.dll");
-        auto nvngxDlssNrPath = Util::FindFilePath(exePath, "nvngx_dlssnr.dll");
 
         std::vector<std::wstring> pathStorage;
 
@@ -405,11 +381,6 @@ class StreamlineProxy
         if (Config::Instance()->DLSSFeaturePath.has_value())
             pathStorage.push_back(Config::Instance()->DLSSFeaturePath.value());
 
-        // Streamline can initialize NGX before the upscaler does. Include the NR
-        // runtime now: later NGX initialization cannot repair the first search list.
-        if (nvngxDlssNrPath.has_value())
-            pathStorage.push_back(nvngxDlssNrPath.value().parent_path().wstring());
-
         // Streamline makes a copy of those
         std::vector<const wchar_t*> paths;
         paths.reserve(pathStorage.size());
@@ -421,7 +392,15 @@ class StreamlineProxy
         pref.numPathsToPlugins = (uint32_t) paths.size();
 
         auto owner = State::GetOwner();
-        State::DisableChecks(owner);
+        if (State::Instance().activeFgOutput == FGOutput::DLSSG &&
+            State::Instance().activeFgNvngx != FGNvngxReplacement::None)
+        {
+            State::DisableChecks(owner, "sl.");
+        }
+        else
+        {
+            State::DisableChecks(owner);
+        }
 
         _isD3D12Requested = true;
         auto initResult = StreamlineProxy::Init()(pref, sl::kSDKVersion);
@@ -440,13 +419,11 @@ class StreamlineProxy
                 auto result = SetD3DDeviceAndBind(device);
                 if (result == sl::Result::eOk)
                 {
-                    if (_slReflexSetOptions != nullptr)
-                    {
-                        auto reflexConst = sl::ReflexOptions {};
-                        reflexConst.mode = sl::ReflexMode::eOff;
-                        reflexConst.useMarkersToOptimize = false;
-                        result = _slReflexSetOptions(reflexConst);
-                    }
+                    auto reflexConst = sl::ReflexOptions {};
+                    reflexConst.mode = sl::ReflexMode::eOff;
+                    reflexConst.useMarkersToOptimize = false;
+
+                    result = _slReflexSetOptions(reflexConst);
                     _isD3D12Inited = result == sl::Result::eOk;
                 }
             }

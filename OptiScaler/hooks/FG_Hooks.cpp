@@ -42,7 +42,7 @@ static bool CheckForFGStatus()
     // if (!Config::Instance()->OverlayMenu.value_or_default())
     //    return false;
 
-    if (State::Instance().activeFgInput == FGInput::NoFG)
+    if (State::Instance().activeFgInput == FGInput::NoFG || State::Instance().activeFgInput == FGInput::NvngxFG)
         return false;
 
     // Disable FG if amd dll is not found
@@ -77,6 +77,8 @@ static bool CheckForFGStatus()
         Config::Instance()->FGOutput.set_volatile_value(FGOutput::NoFG);
         State::Instance().activeFgOutput = Config::Instance()->FGOutput.value_or_default();
 
+        Config::Instance()->FGNvngxReplacement.set_volatile_value(FGNvngxReplacement::None);
+        State::Instance().activeFgNvngx = Config::Instance()->FGNvngxReplacement.value_or_default();
     }
 
     if (State::Instance().activeFgOutput == FGOutput::NoFG)
@@ -360,13 +362,6 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
 {
     if (o_FGSCPresent != nullptr || pSwapChain == nullptr)
         return;
-
-    IDXGISwapChain2* sc2 = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc2))))
-    {
-        sc2->SetMaximumFrameLatency(1);
-        sc2->Release();
-    }
 
     void** pFactoryVTable = *reinterpret_cast<void***>(pSwapChain);
 
@@ -1187,7 +1182,6 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     bool mutexUsed = false;
     if (willPresent && fg != nullptr && fg->IsActive() && !fg->IsPaused() &&
-        state.activeFgOutput != FGOutput::DLSSG &&
         config->FGUseMutexForSwapchain.value_or_default() && fg->Mutex.getOwner() != 2)
     {
         LOG_TRACE("Waiting FG->Mutex 2, current: {}", fg->Mutex.getOwner());
@@ -1200,25 +1194,20 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     sl::FrameToken* localToken = nullptr;
     sl::Result tokenResult = sl::Result::eErrorReflexAPI;
-    if (willPresent && fg != nullptr)
-    {
-        if (fgFeatureActive && state.activeFgOutput == FGOutput::DLSSG)
-            state.dlssgDetectedInterpolationCount = fg->GetInterpolatedFrameCount();
-        else if (!fgFeatureActive)
-            state.dlssgDetectedInterpolationCount = 0;
-    }
+    if (willPresent && fg != nullptr && !fgFeatureActive)
+        state.dlssgDetectedInterpolationCount = 0;
 
     if (willPresent && fgFeatureActive && state.activeFgOutput == FGOutput::DLSSG)
     {
         if ((!ReflexHooks::gameIsSendingMarkers() || !config->FGDLSSGUseGamesReflexMarkers.value_or_default()))
         {
-            if (StreamlineProxy::PCLSetMarker() != nullptr && StreamlineProxy::GetNewFrameToken() != nullptr)
+            if (StreamlineProxy::PCLSetMarker() != nullptr)
             {
                 ((IDXGISwapChain4*) This)->GetCurrentBackBufferIndex();
                 const uint32_t frameId = (uint32_t) fg->FrameCount();
                 tokenResult = StreamlineProxy::GetNewFrameToken()(localToken, &frameId);
 
-                if (tokenResult == sl::Result::eOk && localToken != nullptr)
+                if (tokenResult == sl::Result::eOk)
                     StreamlineProxy::PCLSetMarker()(sl::PCLMarker::ePresentStart, *localToken);
             }
         }
@@ -1245,31 +1234,31 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         Hudfix_Dx12::PresentStart();
     }
 
-    if (willPresent)
+    if (willPresent && config->ForceVsync.has_value())
     {
-        bool forceVsync = config->ForceVsync.has_value() && config->ForceVsync.value();
-        bool explicitlyForced = config->ForceVsync.has_value();
+        LOG_DEBUG("ForceVsync: {}, VsyncInterval: {}, SCAllowTearing: {}, realExclusiveFullscreen: {}",
+                  config->ForceVsync.value(), config->VsyncInterval.value_or_default(), state.SCAllowTearing,
+                  state.realExclusiveFullscreen);
 
-        if (explicitlyForced && forceVsync)
+        if (!config->ForceVsync.value())
+        {
+            SyncInterval = 0;
+
+            if (state.SCAllowTearing && !state.realExclusiveFullscreen)
+            {
+                LOG_DEBUG("Adding DXGI_PRESENT_ALLOW_TEARING");
+                Flags |= DXGI_PRESENT_ALLOW_TEARING;
+            }
+        }
+        else
         {
             SyncInterval = config->VsyncInterval.value_or_default();
+
             if (SyncInterval < 1)
                 SyncInterval = 1;
 
             LOG_DEBUG("Removing DXGI_PRESENT_ALLOW_TEARING");
             Flags &= ~DXGI_PRESENT_ALLOW_TEARING;
-        }
-        else if (fgFeatureActive || (explicitlyForced && !forceVsync))
-        {
-            // Decouple swapchain presentation from VSync when Frame Generation is active
-            // so base render rate is not capped to monitor refresh rate divided by multiplier.
-            SyncInterval = 0;
-
-            if (state.SCAllowTearing && !state.realExclusiveFullscreen && !forceVsync)
-            {
-                LOG_DEBUG("Adding DXGI_PRESENT_ALLOW_TEARING");
-                Flags |= DXGI_PRESENT_ALLOW_TEARING;
-            }
         }
 
         LOG_DEBUG("Final SyncInterval: {}", SyncInterval);
@@ -1302,9 +1291,8 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         if (StreamlineProxy::PCLSetMarker() != nullptr)
             StreamlineProxy::PCLSetMarker()(sl::PCLMarker::ePresentEnd, *localToken);
 
-        // Do not call ReflexSleep at PresentEnd:
-        // Calling slReflexSleep at PresentEnd stalls the presentation thread and can throttle
-        // base frame pacing down to monitor refresh rate divided by multiplier.
+        LOG_DEBUG("Calling ReflexSleep");
+        StreamlineProxy::ReflexSleep()(*localToken);
     }
 
     if (state.swapchainInteropApi == SwapchainInteropApi::None)

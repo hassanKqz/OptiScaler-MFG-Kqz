@@ -6,6 +6,7 @@
 #include "NgxFeatureRegistry.h"
 #include "NVNGX_Parameter.h"
 #include "proxies/NVNGX_Proxy.h"
+#include "dlssnr/DlssNr.h"
 #include "dlssnr/DlssNr_ExposureScan.h"
 #include <upscalers/dlss/DLSSFeature_Dx12.h>
 #include <shaders/output_scaling/OS_Dx12.h>
@@ -13,6 +14,7 @@
 #include <upscalers/FeatureProvider_Dx12.h>
 #include "upscalers/dlss/DLSSFeature_Dx12.h"
 
+#include <framegen/nvngx/Nvngx_FG.h>
 #include "FG/FSR3_Dx12_FG.h"
 #include "FG/Upscaler_Inputs_Dx12.h"
 
@@ -25,9 +27,6 @@
 #include "detours/detours.h"
 #include <ankerl/unordered_dense.h>
 #include <misc/IdentifyGpu.h>
-
-#include "dlssnr/DlssNr.h"
-#include "dlssnr/DlssNr_ExposureScan.h"
 
 static ankerl::unordered_dense::map<unsigned int, ContextData<IFeature_Dx12>> Dx12Contexts;
 static NgxFeatureRegistry HandleToFeature;
@@ -183,11 +182,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_Ext(unsigned long long InApp
         if (NVNGXProxy::NVNGXModule() != nullptr && NVNGXProxy::D3D12_Init_Ext() != nullptr)
         {
             LOG_INFO("calling NVNGXProxy::D3D12_Init_Ext");
-            if (InSDKVersion >= 0x14)
-                DlssNr::NgxDiagnostics::Install(localFeatureInfo.LoggingInfo);
-            DlssNr::NgxDiagnostics::Scope nrInitTrace;
-            LOG_INFO("NR diagnostic driver init: identity={} sdk=0x{:X} device={}", InApplicationId,
-                     (unsigned)InSDKVersion, (void*)InDevice);
 
             auto result = NVNGXProxy::D3D12_Init_Ext()(InApplicationId, InApplicationDataPath, InDevice, InSDKVersion,
                                                        &localFeatureInfo);
@@ -209,6 +203,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_Ext(unsigned long long InApp
     {
         LOG_WARN("NVNGX already inited");
         return NVSDK_NGX_Result_Success;
+    }
+
+    if (State::Instance().activeFgNvngx != FGNvngxReplacement::None)
+    {
+        Nvngx_FG::D3D12_Init_Ext(InApplicationId, InApplicationDataPath, InDevice, InSDKVersion, &localFeatureInfo);
     }
 
     LOG_INFO("AppId: {0}", InApplicationId);
@@ -252,11 +251,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init(unsigned long long InApplica
         if (NVNGXProxy::NVNGXModule() != nullptr && NVNGXProxy::D3D12_Init() != nullptr)
         {
             LOG_INFO("calling NVNGXProxy::D3D12_Init");
-            if (InSDKVersion >= 0x14)
-                DlssNr::NgxDiagnostics::Install(localFeatureInfo.LoggingInfo);
-            DlssNr::NgxDiagnostics::Scope nrInitTrace;
-            LOG_INFO("NR diagnostic driver init: identity={} sdk=0x{:X} device={}", InApplicationId,
-                     (unsigned)InSDKVersion, (void*)InDevice);
 
             auto result = NVNGXProxy::D3D12_Init()(InApplicationId, InApplicationDataPath, InDevice, &localFeatureInfo,
                                                    InSDKVersion);
@@ -273,6 +267,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init(unsigned long long InApplica
         LOG_WARN("NVNGX already inited");
         return NVSDK_NGX_Result_Success;
     }
+
+    // if (State::Instance().activeFgInput == FGInput::NvngxFG)
+    //{
+    //     Nvngx_FG::D3D12_Init(InApplicationId, InApplicationDataPath, InDevice, InFeatureInfo, InSDKVersion);
+    // }
 
     ScopedInitDx12 scopedInit {};
     auto result =
@@ -310,11 +309,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_ProjectID(const char* InProj
         if (NVNGXProxy::NVNGXModule() != nullptr && NVNGXProxy::D3D12_Init_ProjectID() != nullptr)
         {
             LOG_INFO("calling NVNGXProxy::D3D12_Init_ProjectID");
-            if (InSDKVersion >= 0x14)
-                DlssNr::NgxDiagnostics::Install(localFeatureInfo.LoggingInfo);
-            DlssNr::NgxDiagnostics::Scope nrInitTrace;
-            LOG_INFO("NR diagnostic driver init: identity={} sdk=0x{:X} device={}", InProjectId,
-                     (unsigned)InSDKVersion, (void*)InDevice);
 
             auto result =
                 NVNGXProxy::D3D12_Init_ProjectID()(InProjectId, InEngineType, InEngineVersion, InApplicationDataPath,
@@ -379,20 +373,17 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_with_ProjectID(
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
 {
-    DlssNr::ExposureScan::ReleaseTrackedResources();
     shutdown = true;
     State::Instance().nvngxDx12Inited = false;
 
+    D3D12Device = nullptr;
+
     State::Instance().currentFeature = nullptr;
-    // Retire owned NR models before shutting down the NGX device they were created on.
-    Dx12Contexts.clear();
-    HandleToFeature.Clear();
 
     // Unhooking and cleaning stuff causing issues during shutdown.
     // Disabled for now to check if it cause any issues
     // UnhookAll();
     DLSSFeatureDx12::Shutdown(D3D12Device);
-    D3D12Device = nullptr;
 
     // Added `&& !State::Instance().isShuttingDown` hack for crash on exit
     if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx12Inited() &&
@@ -419,6 +410,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
 
     shutdown = false;
 
+    if (State::Instance().activeFgNvngx != FGNvngxReplacement::None)
+    {
+        Nvngx_FG::D3D12_Shutdown();
+    }
+
     State::Instance().nvngxDx12Inited = false;
 
     return NVSDK_NGX_Result_Success;
@@ -426,12 +422,13 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown1(ID3D12Device* InDevice)
 {
-    DlssNr::ExposureScan::ReleaseTrackedResources();
     shutdown = true;
     State::Instance().nvngxDx12Inited = false;
-    State::Instance().currentFeature = nullptr;
-    Dx12Contexts.clear();
-    HandleToFeature.Clear();
+
+    if (State::Instance().activeFgNvngx != FGNvngxReplacement::None)
+    {
+        Nvngx_FG::D3D12_Shutdown1(InDevice);
+    }
 
     // Added `&& !State::Instance().isShuttingDown` hack for crash on exit
     if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx12Inited() &&
@@ -566,6 +563,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_PopulateParameters_Impl(NVSDK_NGX
         return NVSDK_NGX_Result_Fail;
 
     InitNGXParameters(InParameters, API::DX12);
+
+    if (State::Instance().activeFgNvngx != FGNvngxReplacement::None)
+    {
+        Nvngx_FG::D3D12_PopulateParameters_Impl(InParameters);
+    }
 
     return NVSDK_NGX_Result_Success;
 }
@@ -757,6 +759,23 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
     const State& state = State::Instance();
     const Config& cfg = *Config::Instance();
 
+    // DLSSG replacements passthrough
+    if (State::Instance().activeFgNvngx != FGNvngxReplacement::None && Nvngx_FG::isDx12Available() &&
+        InFeatureID == NVSDK_NGX_Feature_FrameGeneration)
+    {
+        LOG_INFO("Passthrough to DLSSG Replacement's CreateFeature for FrameGeneration");
+
+        NVSDK_NGX_Result res = Nvngx_FG::D3D12_CreateFeature(InCmdList, InFeatureID, InParameters, OutHandle);
+
+        if (res == NVSDK_NGX_Result_Success && *OutHandle)
+        {
+            LOG_INFO("Created modded DLSSG feature with HandleId: {}", (*OutHandle)->Id);
+            HandleToFeature.Record((*OutHandle)->Id, InFeatureID);
+        }
+
+        return res;
+    }
+
     // Native DLSS passthrough (exclude SuperSampling and RayReconstruction)
     if (InFeatureID != NVSDK_NGX_Feature_SuperSampling && InFeatureID != NVSDK_NGX_Feature_RayReconstruction)
     {
@@ -821,10 +840,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     if (!shutdown)
         LOG_INFO("releasing feature with id {0}", handleId);
 
-    // Drop the NR exposure scan's tracked references before any feature resources are freed; a
-    // pinned resource would otherwise be used after its heap is released.
-    DlssNr::ExposureScan::ReleaseTrackedResources();
-
     // OptiScaler handles start after this offset. If it's outside this range, it doesn't belong to OptiScaler.
     if (handleId < DLSS_MOD_ID_OFFSET)
     {
@@ -851,6 +866,16 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
             return NVSDK_NGX_Result_FAIL_FeatureNotFound;
         }
     }
+    // Clean up OptiScaler feature with framegen
+    else if (State::Instance().activeFgNvngx != FGNvngxReplacement::None && handleId >= NVNGX_PROVIDER_ID_OFFSET)
+    {
+        LOG_INFO("D3D12_ReleaseFeature modded DLSSG with HandleId: {0}", handleId);
+        const auto result = Nvngx_FG::D3D12_ReleaseFeature(InHandle);
+        if (result == NVSDK_NGX_Result_Success)
+            HandleToFeature.Forget(handleId);
+        return result;
+    }
+
     // Remove feature from context map
     if (auto it = Dx12Contexts.find(handleId); it != Dx12Contexts.end())
     {
@@ -891,7 +916,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetFeatureRequirements(
 
     const bool isUpscaling = FeatureDiscoveryInfo->FeatureID == NVSDK_NGX_Feature_SuperSampling;
     const bool isFG = FeatureDiscoveryInfo->FeatureID == NVSDK_NGX_Feature_FrameGeneration;
-    const bool dlssgAdjacent = State::Instance().activeFgInput == FGInput::DLSSG;
+    const bool dlssgAdjacent = Nvngx_FG::isDx12Available() || State::Instance().activeFgInput == FGInput::DLSSG;
 
     if (isUpscaling || (isFG && dlssgAdjacent))
     {
@@ -1049,9 +1074,7 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
         UpscalerInputsDx12::UpscaleEnd(InCmdList, InParameters, feature);
 
         ScopedSkipHeapCapture skip {};
-        const bool sourceRayReconstruction =
-            HandleToFeature.Read(handleId).feature == NVSDK_NGX_Feature_RayReconstruction;
-        evalSuccess = feature->Evaluate(InCmdList, InParameters, nullptr, 0, sourceRayReconstruction);
+        evalSuccess = feature->Evaluate(InCmdList, InParameters);
     }
 
     if (!evalSuccess)
@@ -1154,13 +1177,33 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         {
             LOG_DEBUG("Passthrough to native DLSS EvaluateFeature for handle {}", handleId);
 
-            // SR and RR handles are always IFeature_Dx12 instances. This branch contains only
-            // unrelated native NGX features, which must never run Neural Rendering.
-            return NVNGXProxy::D3D12_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
+            if (nrUpscale)
+                DlssNr::EvaluateBeforeUpscale(InCmdList, InParameters, nullptr, 0, rayReconstruction);
+
+            NVSDK_NGX_Result result =
+                NVNGXProxy::D3D12_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
+            LOG_DEBUG("Native DLSS EvaluateFeature result: 0x{:X}", (uint32_t) result);
+
+            // Neural Rendering runs over what the upscaler just wrote, on the same list, so frame
+            // generation interpolates from enhanced frames and the model still costs one run per
+            // rendered frame. The feature check is the point: frame generation is handed depth and
+            // motion vectors too, and its handle can reach here because the branch above does not
+            // return, so filtering on the parameter block alone would run the model twice a frame.
+            if (result == NVSDK_NGX_Result_Success && nrUpscale)
+                DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, rayReconstruction);
+
+            return result;
         }
 
         LOG_DEBUG("Native DLSS EvaluateFeature not available for handle {}", handleId);
         return NVSDK_NGX_Result_FAIL_FeatureNotFound;
+    }
+
+    // DLSSG replacements passthrough
+    if (State::Instance().activeFgNvngx != FGNvngxReplacement::None && handleId >= NVNGX_PROVIDER_ID_OFFSET)
+    {
+        LOG_DEBUG("Passthrough to DLSSG Replacement's EvaluateFeature for handle {}", handleId);
+        return Nvngx_FG::D3D12_EvaluateFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
     }
 
     if (lastDlssgCameraNear.has_value())
@@ -1169,9 +1212,17 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     if (lastDlssgCameraFar.has_value())
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
 
+    if (nrUpscale)
+        DlssNr::EvaluateBeforeUpscale(InCmdList, InParameters, nullptr, 0, rayReconstruction);
+
     // OptiScaler internal handling
-    // NR is dispatched inside IFeature_Dx12, shared by NGX, FSR/XeSS inputs and the API bridges.
-    return TryEvaluateOptiFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
+    const NVSDK_NGX_Result optiResult = TryEvaluateOptiFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
+
+    // Same pass, for OptiScaler's own upscalers rather than native DLSS.
+    if (optiResult == NVSDK_NGX_Result_Success && nrUpscale)
+        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, rayReconstruction);
+
+    return optiResult;
 }
 
 #pragma endregion
@@ -1184,6 +1235,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetScratchBufferSize(NVSDK_NGX_Fe
 {
     if (OutSizeInBytes == nullptr)
         return NVSDK_NGX_Result_FAIL_InvalidParameter;
+
+    if (State::Instance().activeFgNvngx != FGNvngxReplacement::None && InFeatureId == NVSDK_NGX_Feature_FrameGeneration)
+    {
+        return Nvngx_FG::D3D12_GetScratchBufferSize(InFeatureId, InParameters, OutSizeInBytes);
+    }
 
     LOG_WARN("-> 52428800");
     *OutSizeInBytes = 52428800;

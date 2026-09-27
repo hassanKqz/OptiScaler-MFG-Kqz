@@ -18,23 +18,25 @@
 //   Resolve  proxy + model answer + untouched copy -> the frame, edited
 
 #include "DlssNr_Common.h"
-#include <dlssnr/DlssNrFeature_Dx12.h>
-#include <memory>
 
 #include <d3d12.h>
 #include <d3dx/d3dx12.h>
 #include <shaders/Shader_Dx12.h>
 #include <shaders/Shader_Dx12Utils.h>
 
-// Twelve-frame descriptor budget, including two clamp bindings and two DLSS enlargement passes.
-// A model chain reuses those two bindings regardless of its pass count.
-#define DLSSNR_NUM_OF_HEAPS 96
+// Three dispatches are recorded per frame and several frames can be in flight at once, more so with
+// frame generation. Each dispatch needs descriptors and constants the GPU is not still reading, so
+// there has to be enough for three passes times the deepest pipeline we might sit behind.
+// Descriptor and constant slots, consumed one per dispatch and reused round-robin with no fence.
+//
+// The shader still records at most meter + encode + downsample + resolve per frame. Extra model layers
+// are NGX evaluates and do not consume this ring; their A/B resources and feature histories are
+// persistent. Forty-eight slots leave twelve fully populated frames before descriptor/constant reuse.
+#define DLSSNR_NUM_OF_HEAPS 48
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 {
   private:
-    struct State;
-    std::unique_ptr<State> _state;
     FrameDescriptorHeap _frameHeaps[DLSSNR_NUM_OF_HEAPS];
 
     // One constant buffer per heap, not one for the class.
@@ -66,8 +68,6 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
   public:
     DlssNr_Dx12(std::string InName, ID3D12Device* InDevice);
     ~DlssNr_Dx12();
-    static void Retire(std::unique_ptr<DlssNr_Dx12> owner);
-    bool ReadyToDestroy();
 
     // The pass. Resources in, and nothing read from anywhere the caller cannot see.
     //
@@ -78,31 +78,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     // Sizes come from the resources. Everything the pass cannot work out for itself is in
     // DlssNrFrameInfo; everything the user chose stays in Config. colour and output may be the same
     // resource. timingQueue is the queue this list will be executed on, when the caller knows it.
-    bool Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth,
+    void Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth,
                   ID3D12Resource* motion, ID3D12Resource* output, const DlssNrFrameInfo& frame,
                   ID3D12CommandQueue* timingQueue = nullptr);
-
-    bool CreateBufferResource(ID3D12Device* device, ID3D12Resource* source, D3D12_RESOURCE_STATES state);
-    void SetBufferState(ID3D12GraphicsCommandList* cmdList, D3D12_RESOURCE_STATES state);
-    ID3D12Resource* Buffer();
-    bool CanRender() const;
-    void DiagnosePipeline(unsigned stage, ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params,
-                          ID3D12Resource* color, uint32_t flags, bool rr, bool success = true);
-    void BeginInputHold(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                        const D3D12_RESOURCE_STATES* inputStates);
-    void EndInputHold(NVSDK_NGX_Parameter* params);
-    bool ProcessSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params, bool beforeUpscale,
-                     ID3D12CommandQueue* queue, bool rayReconstruction, unsigned long long submissionEpoch,
-                     bool interop = false, uint32_t featureFlags = 0);
-    void ResetFinishedCommands(ID3D12CommandList* cmd);
-    void SubmitFinishedCommands(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
-    bool WaitFinished();
-    void ApplyFinished(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue);
-    void ApplyStreamlineFinished(IDXGISwapChain* swapchain, ID3D12Resource* picture, ID3D12CommandQueue* queue);
-    void ApplyFinishedDx11(IDXGISwapChain* swapchain);
-    std::string FinishedStatus();
-    std::string DeferredStatus();
-    DlssNr::CalibrationReading CalibrationStatus();
 
     // Records one pass. Resources that a given mode does not read may be null; a stand-in is bound in
     // their place so every descriptor in the table is valid.
@@ -113,9 +91,7 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
                       // Vestigial. Fed to the slot the removed edit accumulator read its history from;
                       // nothing reads it now and every caller passes nullptr. Kept only so the binding
                       // table keeps its shape -- not evidence that temporal accumulation exists.
-                      ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget, ID3D12Resource* OutKeep,
-                      // Initialize to UINT32_MAX. Reuse only with identical bindings/constants in one chain.
-                      uint32_t* immutableSlot = nullptr);
+                      ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget, ID3D12Resource* OutKeep);
 
     // One compute pass of the ResidualAcrossRR v2 shader (dlssnr_residual.hlsl). Same descriptor
     // table shape as DispatchPass; binds _residualPipelineState instead of _pipelineState. t4/u1

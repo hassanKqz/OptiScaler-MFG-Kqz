@@ -324,10 +324,16 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Shutdown()
 {
     shutdown = true;
 
-    State::Instance().currentFeature = nullptr;
-    // DX11-on-DX12 features own their NR shaders through the shared DX12 feature.
-    Dx11Contexts.clear();
+    // for (auto const& [key, val] : Dx11Contexts)
+    //{
+    //     if (val.feature)
+    //         NVSDK_NGX_D3D11_ReleaseFeature(val.feature->Handle());
+    // }
+
+    // Dx11Contexts.clear();
+
     D3D11Device = nullptr;
+    State::Instance().currentFeature = nullptr;
 
     if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx11Inited() &&
         NVNGXProxy::D3D11_Shutdown() != nullptr)
@@ -351,8 +357,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Shutdown()
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Shutdown1(ID3D11Device* InDevice)
 {
     shutdown = true;
-    State::Instance().currentFeature = nullptr;
-    Dx11Contexts.clear();
 
     if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx11Inited() &&
         NVNGXProxy::D3D11_Shutdown1() != nullptr)

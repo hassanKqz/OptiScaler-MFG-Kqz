@@ -19,12 +19,6 @@
 #include "Amdxc64_Hooks.h"
 #pragma intrinsic(_ReturnAddress)
 
-static inline void CheckMfgModuleLoad(HMODULE mod)
-{
-    if (StreamlineHooks::registerNativeDlssgModule(mod))
-        LOG_DEBUG("Registered native game's DLSS-G module: {:X}", reinterpret_cast<size_t>(mod));
-}
-
 static inline void NormalizePath(std::string& path)
 {
     while (!path.empty() && (path.back() == '\\' || path.back() == '/'))
@@ -251,7 +245,11 @@ DWORD WINAPI KernelHooks::hk_K32_GetFileAttributesW(LPCWSTR lpFileName)
         auto path = wstring_to_string(std::wstring(lpFileName));
         to_lower_in_place(path);
 
-        if (path.contains("nvngx.dll") && !path.contains("_nvngx.dll") &&
+        // "nvngx.dll_" excludes OUR neural-rendering forwarder, named nvngx.dll_dlssnr.dll -- it
+        // contains the substring "nvngx.dll", so without this the spoof redirects an attempt to open
+        // the forwarder to the signed driver nvngx.dll instead, and the wrong image is loaded as the
+        // forwarder. That crashed Dragon's Dogma 2 the moment Neural Rendering first initialised.
+        if (path.contains("nvngx.dll") && !path.contains("_nvngx.dll") && !path.contains("nvngx.dll_") &&
             !IsInsideWindowsDirectory(path)) // apply the override to just one path
         {
             LOG_DEBUG("Overriding GetFileAttributesW for nvngx");
@@ -274,7 +272,8 @@ HANDLE WINAPI KernelHooks::hk_K32_CreateFileW(LPCWSTR lpFileName, DWORD dwDesire
         auto path = wstring_to_string(std::wstring(lpFileName));
         to_lower_in_place(path);
 
-        if (path.contains("nvngx.dll") && !path.contains("_nvngx.dll") && // apply the override to just one path
+        // See the note in hk_K32_GetFileAttributesW: exclude our nvngx.dll_dlssnr.dll forwarder.
+        if (path.contains("nvngx.dll") && !path.contains("_nvngx.dll") && !path.contains("nvngx.dll_") &&
             !IsInsideWindowsDirectory(path))
         {
             static auto& signedDll = State::Instance().nvngxReplacement;
@@ -341,12 +340,7 @@ HMODULE KernelHooks::hk_K32_LoadLibraryW(LPCWSTR lpLibFileName)
     if (result != nullptr)
         return result;
 
-    result = o_K32_LoadLibraryW(lpLibFileName);
-    if (result != nullptr && !State::Instance().isShuttingDown)
-    {
-        CheckMfgModuleLoad(result);
-    }
-    return result;
+    return o_K32_LoadLibraryW(lpLibFileName);
 }
 
 VALIDATE_HOOK(hk_K32_LoadLibraryA, Kernel32Proxy::PFN_LoadLibraryA)
@@ -367,12 +361,7 @@ HMODULE KernelHooks::hk_K32_LoadLibraryA(LPCSTR lpLibFileName)
     if (result != nullptr)
         return result;
 
-    result = o_K32_LoadLibraryA(lpLibFileName);
-    if (result != nullptr && !State::Instance().isShuttingDown)
-    {
-        CheckMfgModuleLoad(result);
-    }
-    return result;
+    return o_K32_LoadLibraryA(lpLibFileName);
 }
 
 VALIDATE_HOOK(hk_K32_LoadLibraryExW, Kernel32Proxy::PFN_LoadLibraryExW)
@@ -392,14 +381,7 @@ HMODULE KernelHooks::hk_K32_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, 
     if (result != nullptr)
         return result;
 
-    result = o_K32_LoadLibraryExW(lpLibFileName, hFile, dwFlags);
-    constexpr DWORD kDataOnly = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE |
-                                LOAD_LIBRARY_AS_IMAGE_RESOURCE;
-    if (result != nullptr && (dwFlags & kDataOnly) == 0 && !State::Instance().isShuttingDown)
-    {
-        CheckMfgModuleLoad(result);
-    }
-    return result;
+    return o_K32_LoadLibraryExW(lpLibFileName, hFile, dwFlags);
 }
 
 VALIDATE_HOOK(hk_K32_LoadLibraryExA, Kernel32Proxy::PFN_LoadLibraryExA)
@@ -420,14 +402,7 @@ HMODULE KernelHooks::hk_K32_LoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, D
     if (result != nullptr)
         return result;
 
-    result = o_K32_LoadLibraryExA(lpLibFileName, hFile, dwFlags);
-    constexpr DWORD kDataOnly = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE |
-                                LOAD_LIBRARY_AS_IMAGE_RESOURCE;
-    if (result != nullptr && (dwFlags & kDataOnly) == 0 && !State::Instance().isShuttingDown)
-    {
-        CheckMfgModuleLoad(result);
-    }
-    return result;
+    return o_K32_LoadLibraryExA(lpLibFileName, hFile, dwFlags);
 }
 
 VALIDATE_HOOK(hk_KB_LoadLibraryExW, KernelBaseProxy::PFN_LoadLibraryExW)
@@ -447,14 +422,7 @@ HMODULE KernelHooks::hk_KB_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, D
     if (result != nullptr)
         return result;
 
-    result = o_KB_LoadLibraryExW(lpLibFileName, hFile, dwFlags);
-    constexpr DWORD kDataOnly = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE |
-                                LOAD_LIBRARY_AS_IMAGE_RESOURCE;
-    if (result != nullptr && (dwFlags & kDataOnly) == 0 && !State::Instance().isShuttingDown)
-    {
-        CheckMfgModuleLoad(result);
-    }
-    return result;
+    return o_KB_LoadLibraryExW(lpLibFileName, hFile, dwFlags);
 }
 
 VALIDATE_HOOK(hk_K32_FreeLibrary, Kernel32Proxy::PFN_FreeLibrary)

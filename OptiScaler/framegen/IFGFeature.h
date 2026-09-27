@@ -148,8 +148,8 @@ class IFGFeature
     void GetInterpolationPos(UINT& left, UINT& top, int index = -1);
     void SetResourceReady(FG_ResourceType type, int index = -1);
     UINT GetInterpolatedFrameCount() const;
-    virtual int GetMaxInterpolationCount() const;
-    virtual bool GetDMFGSupport() const;
+    int GetMaxInterpolationCount() const;
+    bool GetDMFGSupport() const;
 
     void ResetCounters();
     void UpdateTarget();

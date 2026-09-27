@@ -94,6 +94,9 @@ static void CreateRenderTargetDx12(ID3D12Device* device, IDXGISwapChain* pSwapCh
         ID3D12Resource* pBackBuffer = nullptr;
         auto result = pSwapChain->GetBuffer(i, IID_PPV_ARGS(&pBackBuffer));
 
+        if (pBackBuffer != nullptr)
+            pBackBuffer->Release();
+
         if (result != S_OK)
         {
             LOG_ERROR("pSwapChain->GetBuffer: {:X}", (unsigned long) result);
@@ -119,12 +122,13 @@ static void CleanupRenderTargetDx12(bool clearQueue)
     if (!_isInited || !_dx12Device || State::Instance().isShuttingDown)
         return;
 
+    LOG_TRACE("clearQueue: {}", clearQueue);
+
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
     {
-        SAFE_RELEASE(g_mainRenderTargetResource[i]);
+        if (g_mainRenderTargetResource[i])
+            g_mainRenderTargetResource[i] = nullptr;
     }
-
-    LOG_TRACE("clearQueue: {}", clearQueue);
 
     if (clearQueue)
     {
@@ -622,5 +626,3 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (device12 != nullptr)
         device12->Release();
 }
-
-void MenuOverlayDx::ApplyThemeStyle() { MenuOverlayBase::ApplyThemeStyle(); }

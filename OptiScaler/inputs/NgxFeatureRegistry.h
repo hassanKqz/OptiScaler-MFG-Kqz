@@ -11,12 +11,6 @@ class NgxFeatureRegistry
     std::unordered_map<unsigned int, NVSDK_NGX_Feature> features;
 
   public:
-    void Clear()
-    {
-        std::lock_guard lock(mutex);
-        features.clear();
-    }
-
     void Record(unsigned int handle, NVSDK_NGX_Feature feature)
     {
         std::lock_guard lock(mutex);

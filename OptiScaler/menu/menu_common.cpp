@@ -11,8 +11,6 @@
 
 #include <dlssnr/DlssNr.h>
 
-
-
 #include "input/input_system.h"
 
 #include "font/Hack_Compressed.h"
@@ -49,15 +47,6 @@
 #include <misc/IdentifyGpu.h>
 #include <hooks/Xell_Hooks.h>
 #include <low_latency/input/input_common.h>
-
-enum class UiTargetMode
-{
-    SDR,
-    LinearHDR,
-    ScRGB,
-    PQ,
-    HLG
-};
 
 #define MARK_ALL_BACKENDS_CHANGED()                                                                                    \
     for (auto& singleChangeBackend : State::Instance().changeBackend)                                                  \
@@ -219,6 +208,36 @@ template <typename T, size_t N> struct RingBuffer
 const int plotWidth = 360;
 static RingBuffer<float, plotWidth> gFrameTimes;
 static RingBuffer<float, plotWidth> gUpscalerTimes;
+
+struct FsExistsCache
+{
+    std::wstring lastPath;
+    bool cached { false };
+    std::chrono::steady_clock::time_point nextRefresh { std::chrono::steady_clock::time_point::min() };
+    std::chrono::milliseconds interval { 2000 };
+
+    bool Get(const std::filesystem::path& path)
+    {
+        auto now = std::chrono::steady_clock::now();
+        if (path != lastPath || now >= nextRefresh)
+        {
+            lastPath = path;
+            cached = std::filesystem::exists(path);
+            nextRefresh = now + interval;
+        }
+        return cached;
+    }
+};
+
+static FsExistsCache nukemsExists;
+static FsExistsCache enablerExists;
+
+struct FlagDefinition
+{
+    std::string name;
+    uint32_t mask;
+    std::string description;
+};
 
 inline std::string StrFmt(const char* fmt, ...)
 {
@@ -823,210 +842,68 @@ void MenuCommon::PopulateCombo(const std::string& name, TStorage& currentValue,
     }
 }
 
-static UiTargetMode getUiTargetMode()
-{
-    const auto& state = State::Instance();
-
-    const bool fallback = !Config::Instance()->OverlayMenu.value_or_default();
-
-    if (fallback)
-    {
-        // We have no reliable swapchain/output color-space information here.
-        // Only classify the upscaled working image.
-        if (state.currentFeature && state.currentFeature->IsHdr())
-            return UiTargetMode::LinearHDR;
-
-        return UiTargetMode::SDR;
-    }
-
-    const auto& output = state.outputColorSpace;
-
-    // If SetColorSpace1 has not provided a known/valid color space,
-    // fall back conservatively.
-    if (!output.valid)
-        return UiTargetMode::SDR;
-
-    switch (output.transfer)
-    {
-    case ColorTransfer::Linear:
-        // scRGB: linear Rec.709 RGB.
-        //
-        // hdrOutputActive is intentionally NOT required here.
-        // A scRGB swapchain is still linear even when the physical output
-        // is currently SDR. hdrOutputActive only affects the desired
-        // reference-white scaling in toneMapColor().
-        if (output.model == ColorModel::RGB && output.primaries == ColorPrimaries::Rec709)
-        {
-            return UiTargetMode::ScRGB;
-        }
-
-        break;
-
-    case ColorTransfer::PQ:
-        // Direct PQ UI rendering currently assumes RGB PQ / Rec.2020.
-        //
-        // Do not treat YCbCr PQ as an RGB render target.
-        if (output.model == ColorModel::RGB && output.primaries == ColorPrimaries::Rec2020)
-        {
-            return UiTargetMode::PQ;
-        }
-
-        break;
-
-    case ColorTransfer::HLG:
-        // Current HLG UI path assumes an RGB render target.
-        //
-        // DXGI HLG modes are commonly YCbCr, so reject unsupported
-        // combinations rather than applying an RGB HLG transform blindly.
-        if (output.model == ColorModel::RGB && output.primaries == ColorPrimaries::Rec2020)
-        {
-            return UiTargetMode::HLG;
-        }
-
-        break;
-
-    case ColorTransfer::SRGB:
-        return UiTargetMode::SDR;
-
-    case ColorTransfer::Unknown:
-    default:
-        break;
-    }
-
-    // Unsupported model / primaries / transfer combination.
-    return UiTargetMode::SDR;
-}
-
-static float srgbToLinear(float x)
-{
-    x = std::clamp(x, 0.0f, 1.0f);
-
-    if (x <= 0.04045f)
-        return x / 12.92f;
-
-    return std::pow((x + 0.055f) / 1.055f, 2.4f);
-}
-
-static float linearToPQ(float nits)
-{
-    // SMPTE ST.2084
-    constexpr float m1 = 2610.0f / 16384.0f;
-    constexpr float m2 = 2523.0f / 32.0f;
-    constexpr float c1 = 3424.0f / 4096.0f;
-    constexpr float c2 = 2413.0f / 128.0f;
-    constexpr float c3 = 2392.0f / 128.0f;
-
-    const float y = std::clamp(nits / 10000.0f, 0.0f, 1.0f);
-    const float ym1 = std::pow(y, m1);
-
-    return std::pow((c1 + c2 * ym1) / (1.0f + c3 * ym1), m2);
-}
-
-static float linearToHLG(float x)
-{
-    // BT.2100 HLG OETF
-    constexpr float a = 0.17883277f;
-    constexpr float b = 0.28466892f;
-    constexpr float c = 0.55991073f;
-
-    x = std::max(x, 0.0f);
-
-    if (x <= (1.0f / 12.0f))
-        return std::sqrt(3.0f * x);
-
-    return a * std::log(12.0f * x - b) + c;
-}
-
-static ImVec4 linear709To2020(float r, float g, float b)
-{
-    return ImVec4(0.6274040f * r + 0.3292820f * g + 0.0433136f * b, 0.0690970f * r + 0.9195400f * g + 0.0113612f * b,
-                  0.0163916f * r + 0.0880132f * g + 0.8955950f * b, 0.0f);
-}
-
-static ImVec4 legacyHdrToneMap(const ImVec4& color)
-{
-    constexpr float exposure = 1.0f;
-    constexpr float strength = 1.0f;
-
-    const float peak = std::max(color.x, std::max(color.y, color.z));
-
-    if (peak <= 0.0f)
-        return color;
-
-    const float exposedPeak = peak * exposure;
-    const float mappedPeak = exposedPeak / (1.0f + exposedPeak);
-
-    const float reinhardScale = mappedPeak / peak;
-    const float scale = 1.0f + (reinhardScale - 1.0f) * strength;
-
-    return ImVec4(color.x * scale, color.y * scale, color.z * scale, color.w);
-}
-
 static ImVec4 toneMapColor(const ImVec4& color)
 {
-    const auto mode = getUiTargetMode();
-
-    switch (mode)
+    if (State::Instance().isHdrActive ||
+        (!Config::Instance()->OverlayMenu.value_or_default() && State::Instance().currentFeature != nullptr &&
+         State::Instance().currentFeature->IsHdr()))
     {
-    case UiTargetMode::SDR:
-        return color;
+        // Controls how strongly HDR/UI colors are pushed into the tone mapper before compression.
+        // Higher values make colors brighter before mapping; lower values make the result dimmer.
+        constexpr float exposure = 1.0f;
 
-    case UiTargetMode::LinearHDR:
-        return ImVec4(srgbToLinear(color.x), srgbToLinear(color.y), srgbToLinear(color.z), color.w);
+        // Blends between original color and fully tone-mapped color.
+        // 0.0 = no tone mapping, 1.0 = full Reinhard compression.
+        constexpr float strength = 1.0f;
 
-    case UiTargetMode::ScRGB:
-    {
-        constexpr float scRgbReferenceWhiteNits = 80.0f;
-        constexpr float hdrUiWhiteNits = 203.0f;
+        float peak = std::max(color.x, std::max(color.y, color.z));
 
-        const float uiWhiteNits = State::Instance().hdrOutputActive ? hdrUiWhiteNits : scRgbReferenceWhiteNits;
+        if (peak <= 0.0f)
+            return color;
 
-        const float scale = uiWhiteNits / scRgbReferenceWhiteNits;
+        float exposedPeak = peak * exposure;
+        float mappedPeak = exposedPeak / (1.0f + exposedPeak);
 
-        return ImVec4(srgbToLinear(color.x) * scale, srgbToLinear(color.y) * scale, srgbToLinear(color.z) * scale,
-                      color.w);
+        float reinhardScale = mappedPeak / peak;
+        float scale = 1.0f + (reinhardScale - 1.0f) * strength;
+
+        return ImVec4(color.x * scale, color.y * scale, color.z * scale, color.w);
     }
 
-    case UiTargetMode::PQ:
-        // Direct ImGui rendering into a nonlinear PQ target.
-        //
-        // Proper PQ encoding of vertex colors produces incorrect results
-        // with the standard ImGui alpha blend state because blending then
-        // happens in PQ space.
-        //
-        // Keep the known-good legacy compression until PQ rendering is
-        // moved to a linear intermediate/composite pass.
-        return legacyHdrToneMap(color);
-
-    case UiTargetMode::HLG:
-        // Same fundamental nonlinear-blending problem as PQ.
-        // Conservative compatibility behavior for now.
-        return legacyHdrToneMap(color);
-
-    default:
-        return color;
-    }
+    return color;
 }
 
 static void MenuHdrCheck(ImGuiIO io)
 {
-    if (!_hdrTonemapApplied)
+    // If game is using HDR, apply tone mapping to the ImGui style
+    if (State::Instance().isHdrActive ||
+        (!Config::Instance()->OverlayMenu.value_or_default() && State::Instance().currentFeature != nullptr &&
+         State::Instance().currentFeature->IsHdr()))
     {
-        ImGuiStyle& style = ImGui::GetStyle();
-        const auto mode = getUiTargetMode();
-
-        LOG_INFO("Output HDR: {}, UI Mode: {}", State::Instance().hdrOutputActive, magic_enum::enum_name(mode));
-
-        CopyMemory(SdrColors, style.Colors, sizeof(style.Colors));
-
-        // Apply tone mapping to the ImGui style
-        for (int i = 0; i < ImGuiCol_COUNT; ++i)
+        if (!_hdrTonemapApplied)
         {
-            ImVec4 color = style.Colors[i];
-            style.Colors[i] = toneMapColor(color);
-        }
+            ImGuiStyle& style = ImGui::GetStyle();
 
-        _hdrTonemapApplied = true;
+            CopyMemory(SdrColors, style.Colors, sizeof(style.Colors));
+
+            // Apply tone mapping to the ImGui style
+            for (int i = 0; i < ImGuiCol_COUNT; ++i)
+            {
+                ImVec4 color = style.Colors[i];
+                style.Colors[i] = toneMapColor(color);
+            }
+
+            _hdrTonemapApplied = true;
+        }
+    }
+    else
+    {
+        if (_hdrTonemapApplied)
+        {
+            ImGuiStyle& style = ImGui::GetStyle();
+            CopyMemory(style.Colors, SdrColors, sizeof(style.Colors));
+            _hdrTonemapApplied = false;
+        }
     }
 }
 
@@ -1093,11 +970,8 @@ inline static std::string GetDispatchString(UINT source)
     }
 }
 
-void MenuCommon::ApplyThemeStyle()
+static void ApplyThemeStyle()
 {
-    if (ImGui::GetCurrentContext() == nullptr)
-        return;
-
     ImGuiStyle& style = ImGui::GetStyle();
 
     auto conf = Config::Instance();
@@ -1434,7 +1308,7 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
             inputFG = false;
 
             if (state.activeFgInput != FGInput::NoFG && state.activeFgOutput != FGOutput::NoFG &&
-                state.currentFGSwapchain != nullptr)
+                (state.currentFGSwapchain != nullptr || state.activeFgInput == FGInput::NvngxFG))
             {
                 config->FGEnabled = !config->FGEnabled.value_or_default();
                 LOG_DEBUG("FG toggle key pressed, setting FGEnabled to {}", config->FGEnabled.value_or_default());
@@ -1484,6 +1358,10 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
                 ApplyThemeStyle();
 
                 refreshRate = Util::GetActiveRefreshRate(_handle);
+
+                auto optiPath = std::filesystem::path(Config::Instance()->MainDllPath.value());
+                state.artursFgFileAvailable = enablerExists.Get(optiPath / L"dlss-enabler-headless.dll");
+                state.nukemsFgFileAvailable = nukemsExists.Get(optiPath / L"dlssg_to_fsr3_amd_is_better.dll");
 
                 if (State::Instance().currentFeature != nullptr)
                 {
@@ -1577,17 +1455,6 @@ void MenuCommon::UpdateVersionAndStartupNotifications(RenderMenuContext& ctx)
         }
 
         state.postDone = true;
-    }
-
-    // RE Engine without REFramework (dinput8.dll): warn once, loading may crash otherwise.
-    if (state.reframeworkMissing && !state.reframeworkNoticeShown)
-    {
-        ImGuiToast notification { ImGuiToastType::Warning, 15000 };
-        notification.setTitle("RE Engine: REFramework no detectado");
-        notification.setContent("Este juego puede requerir REFramework (dinput8.dll) para que OptiScaler no crashee "
-                                "al cargar.\nDescárgalo de github.com/praydog/REFramework o del fork de onehoon.");
-        ImGui::InsertNotification(notification);
-        state.reframeworkNoticeShown = true;
     }
 
     // Initialize splash timing and select the splash text once per process.
@@ -1721,8 +1588,9 @@ void MenuCommon::RenderNotifications(RenderMenuContext& ctx)
     auto& io = ctx.io;
 
     // Notifications
-    const UiTargetMode uiTargetMode = getUiTargetMode();
-    const bool tonemapRequired = uiTargetMode != UiTargetMode::SDR;
+    bool tonemapRequired = State::Instance().isHdrActive ||
+                           (!Config::Instance()->OverlayMenu.value_or_default() &&
+                            State::Instance().currentFeature != nullptr && State::Instance().currentFeature->IsHdr());
 
     float screenHeight = State::Instance().screenHeight;
     if (io.DisplaySize.y != 0)
@@ -1792,10 +1660,70 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
 
 // Labels for the comparison views.
 //
+// Drawn straight onto the foreground draw list, not as ImGui windows -- the last attempt made them
+// draggable windows and the clamping fought the split. Here each label is clipped to its own side of
+// the comparison, so in the wipe the moving split reveals and hides it exactly as it does the
+// pictures, and there is nothing to drag. Both wipe labels sit in the same top-left corner, each
+// clipped to its side, so whichever picture currently owns that corner is the one whose label shows.
+void MenuCommon::RenderNrCompareTags()
+{
+    auto* config = Config::Instance();
+
+    const uint32_t mode = config->DlssNrCompare.value_or_default();
+
+    if (mode == 0 || !config->DlssNrCompareTags.value_or_default())
+        return;
+
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+
+    if (screen.x < 1.0f || screen.y < 1.0f)
+        return;
+
+    const bool swap = config->DlssNrCompareSwap.value_or_default();
+    const float split = mode == 1 ? 0.5f : std::clamp(config->DlssNrCompareSplit.value_or_default(), 0.0f, 1.0f);
+    const float splitX = split * screen.x;
+
+    const float scale = std::clamp(config->DlssNrTagScale.value_or_default(), 0.5f, 5.0f);
+
+    // The left side is the untouched frame unless swapped -- matching the shader's
+    // showOriginal = (uv.x < split) != swap.
+    const char* leftText = swap ? "DLSS NR : ON" : "DLSS NR : OFF";
+    const char* rightText = swap ? "DLSS NR : OFF" : "DLSS NR : ON";
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float fontSize = ImGui::GetFontSize() * scale;
+    const float margin = 10.0f * scale;
+
+    // Both labels flank the divider along the top: the left picture's label is right-aligned just
+    // left of the split, the right picture's is left-aligned just right of it. Each is clipped to its
+    // own side, so in the wipe the split reveals and hides them along with the images.
+    auto drawTag = [&](const char* text, float x, ImVec2 clipMin, ImVec2 clipMax)
+    {
+        const ImVec2 size = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text);
+
+        // Never let a label run off the visible frame as it grows.
+        x = std::min(std::max(x, 0.0f), screen.x - size.x);
+        float y = std::min(margin, screen.y - size.y - margin);
+        y = std::max(y, 0.0f);
+
+        dl->PushClipRect(clipMin, clipMax, true);
+        dl->AddText(font, fontSize, ImVec2(x + 2.0f, y + 2.0f), IM_COL32(0, 0, 0, 210), text);
+        dl->AddText(font, fontSize, ImVec2(x, y), IM_COL32(255, 255, 255, 255), text);
+        dl->PopClipRect();
+    };
+
+    const ImVec2 leftSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, leftText);
+
+    // Left picture's label: right edge a margin in from the split. Right picture's: left edge a margin
+    // out from the split.
+    drawTag(leftText, splitX - margin - leftSize.x, ImVec2(0.0f, 0.0f), ImVec2(splitX, screen.y));
+    drawTag(rightText, splitX + margin, ImVec2(splitX, 0.0f), ImVec2(screen.x, screen.y));
+}
+
 void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
 {
-    DlssNr::RenderNrCompareTags();
-
+    RenderNrCompareTags();
 
     auto& state = ctx.state;
     auto config = ctx.config;
@@ -1952,24 +1880,20 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
 
             if (fg != nullptr && fg->IsActive() && !fg->IsPaused())
             {
-                const double mult = (double) (fg->GetInterpolatedFrameCount() + 1);
-                const double totalFps = frameRate;
-                const double baseFps = mult > 0.0 ? (frameRate / mult) : frameRate;
-                const double displayFrameTime = frameTime;
+                const double baseFps = frameRate / (double) (fg->GetInterpolatedFrameCount() + 1);
 
                 switch (overlayType)
                 {
                 case FpsOverlay_JustFPS:
-                    fpsPart = StrFmt("%6.1f/%5.1f ", totalFps, baseFps);
+                    fpsPart = StrFmt("%6.1f/%5.1f ", frameRate, baseFps);
                     break;
 
                 case FpsOverlay_Simple:
-                    fpsPart = StrFmt("FPS: %6.1f/%5.1f, %7.2f ms", totalFps, baseFps, displayFrameTime);
+                    fpsPart = StrFmt("FPS: %6.1f/%5.1f, %7.2f ms", frameRate, baseFps, frameTime);
                     break;
 
                 default:
-                    fpsPart = StrFmt("FPS: %6.1f/%5.1f, Avg: %6.1f", totalFps, baseFps,
-                                     averageFrameTime > 0.0f ? (1000.0f / averageFrameTime) : 0.0f);
+                    fpsPart = StrFmt("FPS: %6.1f/%5.1f, Avg: %6.1f", frameRate, baseFps, 1000.0f / averageFrameTime);
                     break;
                 }
             }
@@ -2322,15 +2246,6 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
         //    ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.4f, 0.f, 1.f)), "%s", versionStatus.error.c_str());
         //    ImGui::Spacing();
         //}
-    }
-
-    // Persistent warning while a RE Engine game is missing REFramework (dinput8.dll)
-    if (state.reframeworkMissing)
-    {
-        ImGui::Spacing();
-        ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)),
-                           "RE Engine: REFramework no detectado (falta dinput8.dll)");
-        ImGui::Spacing();
     }
 
     // No active upscaler message
@@ -3731,7 +3646,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
                                                   state.activeFgInput == FGInput::FSRFG ||
                                                   state.activeFgInput == FGInput::FSRFG30;
 
-        const bool showHudCutoff = state.activeFgOutput == FGOutput::FSRFG;
+        const bool showHudCutoff = state.activeFgInput == FGInput::NvngxFG || state.activeFgOutput == FGOutput::FSRFG;
 
         if (showOutputSpecificFGSettings || showHudCutoff)
         {
@@ -3891,9 +3806,6 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
     auto& menuResScale = ctx.menuResScale;
     auto& primaryGpu = *ctx.primaryGpu;
     auto fgOutput = state.currentFG;
-
-    const UiTargetMode uiTargetMode = getUiTargetMode();
-    const bool outputIsHdr = uiTargetMode != UiTargetMode::SDR;
 
     // FSR FG controls
     if (state.activeFgOutput == FGOutput::FSRFG && state.activeFgInput != FGInput::NoFG &&
@@ -4191,7 +4103,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
                 ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "Borderless display mode required!");
             }
 
-            if (!ignoreChecks && outputIsHdr)
+            if (!ignoreChecks && state.isHdrActive)
             {
                 if (state.currentSwapchainDesc.BufferDesc.Format >= DXGI_FORMAT_R32G32B32A32_TYPELESS &&
                     state.currentSwapchainDesc.BufferDesc.Format <= DXGI_FORMAT_R16G16B16A16_SINT)
@@ -4793,6 +4705,299 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         }
     }
 
+    const FGNvngxReplacement activeNvngxFg = state.activeFgNvngx;
+    if (activeNvngxFg != FGNvngxReplacement::None)
+    {
+        if (activeNvngxFg == FGNvngxReplacement::Nukems)
+        {
+            SeparatorWithHelpMarker("Frame Generation (FSR3-FG via Nukem's DLSSG)",
+                                    "Requires Nukem's dlssg_to_fsr3 dll");
+
+            if (!state.nukemsFgFileAvailable)
+            {
+                ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)),
+                                   "Please put dlssg_to_fsr3_amd_is_better.dll into OptiScaler folder");
+            }
+        }
+        else if (activeNvngxFg == FGNvngxReplacement::Arturs)
+        {
+            SeparatorWithHelpMarker("Frame Generation (FSR3-MFG via DLSS Enabler)",
+                                    "DLSS Enabler as dlss-enabler-headless.dll");
+
+            if (!state.artursFgFileAvailable)
+            {
+                ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)),
+                                   "Please put dlss-enabler-headless.dll into OptiScaler folder");
+            }
+
+            ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)),
+                               "Using a subset of features from DLSS Enabler");
+        }
+        else if (activeNvngxFg == FGNvngxReplacement::FFX)
+        {
+            SeparatorWithHelpMarker("Frame Generation (FSRFG via FFX)", "FFX using the DLSSG swapchain");
+        }
+        else if (activeNvngxFg == FGNvngxReplacement::Combo)
+        {
+            SeparatorWithHelpMarker("Frame Generation (Enabler + FFX)",
+                                    "FFX for middle fake frames, and Enabler for the rest\n\n2x - FFX\n"
+                                    "3x - Enabler\n4x - FFX + Enabler\n5x - Enabler\n6x - FFX + Enabler");
+        }
+
+        if (state.activeFgInput == FGInput::NvngxFG)
+        {
+
+            bool dmfgActive = state.dlssgGameDMFGSupported && config->FGDLSSGOverrideForceDMFG.value_or_default();
+
+            if (!ReflexHooks::isReflexHooked())
+            {
+                ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "Reflex not hooked");
+                ImGui::Text("If you are using an AMD/Intel GPU, then make sure you have Fakenvapi");
+            }
+            else if (ReflexHooks::dlssgFrameCountToGenerate() == 0 && !dmfgActive)
+            {
+                ImGui::Text("Please select DLSS Frame Generation in the game options\n"
+                            "You might need to select DLSS first");
+            }
+
+            if (state.swapchainApi == DX12)
+            {
+                ImGui::Text("Current DLSSG state:");
+                ImGui::SameLine();
+                if (auto count = state.dlssgDetectedInterpolationCount; count > 0)
+                {
+                    ImGui::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)),
+                                       std::format("ON {}x", count + 1).c_str());
+                }
+                else
+                {
+                    ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "OFF");
+                }
+
+                // Issue mostly shows up on AMD on Windows on pre-RDNA3 in some non-UE games
+                // Hide to reduce confusion, config is still read
+                const bool isUnrealEngine = State::Instance().NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL ||
+                                            State::Instance().gameQuirks & GameQuirk::ForceUnrealEngine;
+                const bool isDllProxyNvngxType =
+                    activeNvngxFg == FGNvngxReplacement::Nukems || activeNvngxFg == FGNvngxReplacement::Arturs;
+                if (isDllProxyNvngxType && !primaryGpu.dlssCapable && primaryGpu.fsr4Support == FSR4Support::None &&
+                    !primaryGpu.usesVkd3dProton && !isUnrealEngine)
+                {
+                    if (bool makeDepthCopy = config->NvngxFGMakeDepthCopy.value_or_default();
+                        ImGui::Checkbox("Fix broken visuals", &makeDepthCopy))
+                    {
+                        config->NvngxFGMakeDepthCopy = makeDepthCopy;
+                    }
+                    ShowHelpMarker("Makes a copy of the depth buffer\nCan fix broken visuals in some games on AMD "
+                                   "GPUs under Windows\nCan cause stutters, so best to use only when necessary");
+                }
+            }
+            else if (state.swapchainApi == Vulkan)
+            {
+                ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)),
+                                   "DLSSG is purposefully disabled when this menu is visible");
+                ImGui::Spacing();
+            }
+        }
+
+        bool isLoaded = false;
+        if (state.swapchainApi == Vulkan)
+            isLoaded = Nvngx_FG::isVulkanAvailable();
+        if (state.swapchainApi == DX12)
+            isLoaded = Nvngx_FG::isDx12Available();
+
+        if (isLoaded)
+        {
+            if (activeNvngxFg == FGNvngxReplacement::Arturs || activeNvngxFg == FGNvngxReplacement::Combo)
+            {
+                auto featureVer = Nvngx_FG::version();
+                auto antighostingVer = Nvngx_FG::extraVersion();
+                ImGui::Text("DE Ver: %d.%d.%d.%d   GB Ver: %d.%d", featureVer.major, featureVer.minor, featureVer.patch,
+                            featureVer.reserved, antighostingVer.major, antighostingVer.minor);
+
+                static std::vector<FlagDefinition> common_flags = {
+                    { "Antighosting (GB)", 0x00100000, "Enable anti-ghosting correction" },
+                    { "Temporal HUD pin", 0x04000000, "Enable temporal HUD pinning (present-backbuffer stability)" }
+                };
+
+                static std::vector<FlagDefinition> uncommon_flags = {
+                    //{ "Hudless UI mask", 0x02000000, "Use HUD-less as UI mask (DL2 inverted semantics)" },
+                    { "HUD interpolation", 0x08000000, "HUD OF interpolation (0=legacy pin-present, 1=OF warp)" },
+                    { "Ignore UI texture", 0x10000000, "Ignore dedicated DLSSG.UI texture (force legacy HUD path)" },
+                    //{ "Dp4a active", 0x20000000, "OF pipeline using dp4a-accelerated SSD (SM 6.4+)" },
+                    { "Pin backbuffer", 0x40000000, "Pin DLSSG.Backbuffer to subframe-1 snapshot across MFG frame" }
+                };
+
+                static std::vector<FlagDefinition> debug_flags = {
+                    { "Antighosting red tint", 0x00200000, "Debug: red tint on corrected pixels" },
+                    { "Antighosting split screen", 0x00400000, "Debug: split screen comparison" },
+                    { "Frame index line", 0x00010000, "" },
+                    { "HUD detection", 0x00020000, "" },
+                    { "Disocclusion tint", 0x00040000, "" },
+                    { "Artifacts detection", 0x00080000, "" },
+                    { "Camera MV debug", 0x00800000, "Debug: blue tint where camera MV fallback is used" },
+                    { "Generic visualization", 0x01000000, "Debug: trapezoid zone visualization" }
+                };
+
+                uint32_t temp_flags = config->NvngxFGDispatchFlags.value_or_default();
+                bool changed = false;
+
+                ImGui::Text("Raw DispatchFlags:");
+                changed |= ImGui::InputScalar("##RawFlags", ImGuiDataType_U32, &temp_flags, NULL, NULL, "%08X",
+                                              ImGuiInputTextFlags_CharsHexadecimal);
+
+                ImGui::SameLine(0.0f, 20.0f * menuResScale);
+                if (bool showDebug = config->NvngxFGShowDebug.value_or_default();
+                    ImGui::Checkbox("Show Debug", &showDebug))
+                {
+                    config->NvngxFGShowDebug = showDebug;
+                }
+                ShowHelpMarker("Required for Debug flags to work correctly");
+
+                ImGui::Spacing();
+
+                if (auto ch = ScopedCollapsingHeader("Active DispatchFlags"); ch.IsHeaderOpen())
+                {
+                    ScopedIndent indent {};
+
+                    auto render_flags = [&](const std::vector<FlagDefinition>& flags)
+                    {
+                        for (const auto& flag : flags)
+                        {
+                            changed |= ImGui::CheckboxFlags(flag.name.c_str(), &temp_flags, flag.mask);
+
+                            if (ImGui::IsItemHovered() && !flag.description.empty())
+                            {
+                                ImGui::SetTooltip("%s", flag.description.c_str());
+                            }
+                        }
+                    };
+
+                    ImGui::TextDisabled("Common");
+                    render_flags(common_flags);
+
+                    ImGui::Spacing();
+                    ImGui::TextDisabled("Uncommon");
+                    render_flags(uncommon_flags);
+
+                    if (config->NvngxFGShowDebug.value_or_default())
+                    {
+                        ImGui::Spacing();
+                        ImGui::TextDisabled("Debug");
+                        render_flags(debug_flags);
+                    }
+                }
+
+                if (changed)
+                {
+                    config->NvngxFGDispatchFlags = temp_flags;
+                }
+            }
+
+            if (activeNvngxFg == FGNvngxReplacement::Nukems)
+            {
+                if (ImGui::Checkbox("Enable Debug View", &state.dlssgDebugView))
+                {
+                    Nvngx_FG::setDebugView(state.dlssgDebugView);
+                }
+                if (ImGui::Checkbox("Interpolated frames only", &state.dlssgInterpolatedOnly))
+                {
+                    Nvngx_FG::setInterpolatedOnly(state.dlssgInterpolatedOnly);
+                }
+            }
+
+            if (activeNvngxFg == FGNvngxReplacement::FFX || activeNvngxFg == FGNvngxReplacement::Combo)
+            {
+                if (_ffxFGIndex < 0)
+                    _ffxFGIndex = config->FfxFGIndex.value_or_default();
+
+                if (state.ffxFGVersionNames.size() > 0)
+                {
+                    ImGui::PushItemWidth(135.0f * menuResScale);
+
+                    auto currentName = StrFmt("FSR %s", state.ffxFGVersionNames[_ffxFGIndex]);
+                    if (ImGui::BeginCombo("FFX FG", currentName.c_str()))
+                    {
+                        for (int n = 0; n < state.ffxFGVersionIds.size(); n++)
+                        {
+                            auto name = StrFmt("FSR %s", state.ffxFGVersionNames[n]);
+                            if (ImGui::Selectable(name.c_str(), config->FfxFGIndex.value_or_default() == n))
+                                _ffxFGIndex = n;
+                        }
+
+                        ImGui::EndCombo();
+                    }
+                    ImGui::PopItemWidth();
+
+                    ShowHelpMarker("List of FGs reported by FFX SDK");
+
+                    ImGui::SameLine(0.0f, 6.0f);
+
+                    if (ImGui::Button("Change FG") && _ffxFGIndex != config->FfxFGIndex.value_or_default())
+                    {
+                        config->FfxFGIndex = _ffxFGIndex;
+                        state.fgChanged = true;
+                    }
+                }
+
+                bool fgAsync = config->FGAsync.value_or_default();
+                if (ImGui::Checkbox("Allow Async##2", &fgAsync))
+                {
+                    config->FGAsync = fgAsync;
+
+                    if (config->FGEnabled.value_or_default())
+                    {
+                        state.fgChanged = true;
+                        LOG_DEBUG("Async set FGChanged");
+                    }
+                }
+                ShowHelpMarker("Enable Async for better FG performance\nMight cause crashes, especially with HUD Fix!");
+
+                ImGui::SameLine(0.0f, 20.0f * menuResScale);
+                bool fgDV = config->FGDebugView.value_or_default();
+                if (ImGui::Checkbox("Debug View##3", &fgDV))
+                {
+                    config->FGDebugView = fgDV;
+
+                    if (config->FGEnabled.value_or_default())
+                    {
+                        state.fgChanged = true;
+                        LOG_DEBUG("DebugView set FGChanged");
+                    }
+                }
+                ShowHelpMarker("Enable FSR3.1-FG Debug view\n\n"
+                               "Top left: Game Motion Vectors\n"
+                               "Top middle: GMV Depth\n"
+                               "Top right: Optical Flow MV\n"
+                               "Middle: Interpolated frame only\n"
+                               "Bottom left: Disocclusion mask\n"
+                               "Bottom middle: Interpolation source (w/o UI)\n"
+                               "Bottom right: HUDless resource");
+
+                if (Nvngx_FG::version().major > 3)
+                {
+                    ImGui::SameLine(0.0f, 20.0f * menuResScale);
+                    if (bool fgwm = config->FSRFGEnableWatermark.value_or_default();
+                        ImGui::Checkbox("Enable Watermark", &fgwm))
+                    {
+                        LOG_DEBUG("FSRFGEnableWatermark set FGWatermark: {}", fgwm);
+                        config->FSRFGEnableWatermark = fgwm;
+                    }
+
+                    ShowHelpMarker("After changing this option, please Save Settings\n"
+                                   "It will be applied on next launch.");
+                }
+            }
+
+            if (bool disableHudless = config->NvngxFGDisableHudless.value_or_default();
+                ImGui::Checkbox("Disable HUDless", &disableHudless))
+            {
+                config->NvngxFGDisableHudless = disableHudless;
+            }
+            ShowHelpMarker("Might be required for some sets of DispatchFlags");
+        }
+    }
+
     // FSR-FG Inputs
     if (state.currentFGSwapchain != nullptr &&
         (state.activeFgInput == FGInput::FSRFG || state.activeFgInput == FGInput::FSRFG30))
@@ -4850,13 +5055,18 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         {
             ImGui::Text("Current Streamline FG state:");
             ImGui::SameLine();
-            if (fgOutput->IsActive())
+            if ((state.fgLastFrame - state.dlssgLastFrame) < 3)
             {
-                ImGui::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)), "ON");
+                if (fgOutput->IsActive())
+                    ImGui::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)), "ON");
+                else
+                    ImGui::TextColored(toneMapColor(ImVec4(1.0f, 0.647f, 0.0f, 1.f)), "ACTIVATE FG");
             }
             else
             {
-                ImGui::TextColored(toneMapColor(ImVec4(1.0f, 0.647f, 0.0f, 1.f)), "ACTIVATE FG");
+                ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "OFF");
+                ImGui::Text("Please select DLSS Frame Generation in the game options\n"
+                            "You might need to select DLSS first");
             }
         }
     }
@@ -7012,9 +7222,6 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
         RenderActiveUpscalerSettings(ctx);
         RenderFrameGenerationSelection(ctx);
         RenderFrameGenerationRuntimeSettings(ctx);
-        // Keep the Neural Rendering entry in the left column with the frame-generation controls
-        // (stage 1 placement) so the section stays visible independently of the right column.
-        DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
         RenderFsrCommonSettings(ctx);
         RenderFramerateSettings(ctx);
 #ifdef LOW_LATENCY_INPUTS
@@ -7027,6 +7234,7 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
 
         // Right column: image quality, initialization, advanced options, appearance, overlay and input settings.
         RenderActiveImageSettings(ctx);
+        DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
         RenderMagnifierSettings(ctx);
         RenderQuirksSettings(ctx);
         RenderAdvancedSettings(ctx);
@@ -7626,6 +7834,95 @@ void KeyUp(UINT vKey)
     inputFpsCycle = vKey == Config::Instance()->FpsCycleShortcutKey.value_or_default();
 }
 
+// The lamp, and only the lamp.
+//
+// Red for dark, green for full light, with its reading beside it. No status sentence: the whole
+// point of a light meter is that it is read at a glance while playing, and a paragraph in the corner
+// of somebody's game is not that. Everything wordy lives in the menu, which is where someone has
+// already decided to stop and read.
+//
+// Drawn only when its own setting is on. An overlay that appears because a scan happens to be
+// running is an overlay nobody asked for.
+void RenderExposureScanIndicator(float alpha)
+{
+    using DlssNr::ExposureScan::Verdict;
+
+    if (!Config::Instance()->DlssNrScanMeter.value_or_default())
+        return;
+
+    if (DlssNr::ExposureScan::Where() == Verdict::Off)
+        return;
+
+    int which = 0;
+    float low = 0.0f, high = 0.0f;
+    const float now = DlssNr::ExposureScan::BestValue(&which, &low, &high);
+
+    // Nothing found yet, or no range to place it in: a dim lamp, which says "watching, no reading"
+    // without saying it in words.
+    const bool reading = now > 0.0f && high > low;
+
+    float lit = 0.0f;
+
+    if (reading)
+    {
+        // An exposure falls as the scene brightens, so the value reads backwards unless the buffer
+        // holds the reciprocal -- the same question the anchor asks, answered from the same setting,
+        // because a lamp contradicting the picture would be worse than no lamp.
+        lit = (high - now) / (high - low);
+
+        if (Config::Instance()->DlssNrScanInverted.value_or_default())
+            lit = 1.0f - lit;
+
+        lit = lit < 0.0f ? 0.0f : (lit > 1.0f ? 1.0f : lit);
+    }
+
+    // Red to amber to green. A straight red-to-green fade passes through a muddy brown at the
+    // midpoint, and the midpoint is where most of a session is spent.
+    const ImVec4 dark(0.90f, 0.22f, 0.20f, 1.0f);
+    const ImVec4 mid(0.95f, 0.75f, 0.20f, 1.0f);
+    const ImVec4 bright(0.35f, 0.88f, 0.38f, 1.0f);
+    const ImVec4 idle(0.45f, 0.45f, 0.45f, 1.0f);
+
+    ImVec4 lamp = idle;
+
+    if (reading)
+    {
+        const float t = lit < 0.5f ? lit * 2.0f : (lit - 0.5f) * 2.0f;
+        const ImVec4& a = lit < 0.5f ? dark : mid;
+        const ImVec4& b = lit < 0.5f ? mid : bright;
+        lamp = ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, 1.0f);
+    }
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 12.0f, vp->WorkPos.y + 12.0f), ImGuiCond_Always,
+                            ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(alpha);
+
+    if (ImGui::Begin("DlssNrExposureScan", nullptr,
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDecoration |
+                         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove))
+    {
+        const float r = ImGui::GetFontSize() * 0.38f;
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const ImVec2 centre(at.x + r, at.y + ImGui::GetTextLineHeight() * 0.5f);
+
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw->AddCircleFilled(centre, r, ImGui::GetColorU32(lamp), 20);
+        draw->AddCircle(centre, r, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.6f)), 20, 1.5f);
+
+        ImGui::Dummy(ImVec2(r * 2.0f + 6.0f, ImGui::GetTextLineHeight()));
+        ImGui::SameLine();
+
+        if (reading)
+            ImGui::TextColored(lamp, "%3.0f%%  %.5f", lit * 100.0f, now);
+        else
+            ImGui::TextColored(idle, "--");
+    }
+
+    ImGui::End();
+}
+
 bool MenuCommon::RenderMenu()
 {
     if (!_isInited)
@@ -7651,7 +7948,7 @@ bool MenuCommon::RenderMenu()
     RenderNotifications(ctx);
     UpdateFrameTimeAverages(ctx);
     RenderPerformanceOverlay(ctx);
-    DlssNr::RenderExposureScanIndicator(ctx.config->FpsOverlayAlpha.value_or_default());
+    RenderExposureScanIndicator(ctx.config->FpsOverlayAlpha.value_or_default());
 
     // 4) Draw the full settings menu last so popups and child windows keep their existing behavior.
     RenderMainMenuWindow(ctx);

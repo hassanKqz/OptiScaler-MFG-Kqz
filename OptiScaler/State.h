@@ -14,6 +14,13 @@
 #include <vulkan/vulkan.h>
 #include <ankerl/unordered_dense.h>
 
+enum class FGPreset : uint32_t
+{
+    NoFG,
+    OptiFG,
+    Nukems,
+};
+
 enum class FrameTimeSource : uint32_t
 {
     Input,
@@ -26,6 +33,7 @@ enum class FGInput : uint32_t
     NoFG,
     Upscaler, // OptiFG
     DLSSG,    // technically Streamline inputs
+    NvngxFG,
     FSRFG,
     FSRFG30,
     XeFG,
@@ -39,6 +47,15 @@ enum class FGOutput : uint32_t
     FSRFG,
     DLSSG,
     XeFG,
+};
+
+enum class FGNvngxReplacement : uint32_t
+{
+    None,
+    Nukems,
+    Arturs,
+    FFX,
+    Combo,
 };
 
 enum class WorkingMode : uint32_t
@@ -69,48 +86,6 @@ enum class SwapchainInteropApi : uint32_t
     Dx11wDx12,
 };
 
-enum class ColorTransfer : uint32_t
-{
-    Unknown,
-    SRGB,
-    Linear,
-    PQ,
-    HLG
-};
-
-enum class ColorPrimaries : uint32_t
-{
-    Unknown,
-    Rec709,
-    Rec2020
-};
-
-enum class ColorRange : uint32_t
-{
-    Unknown,
-    Full,
-    Studio
-};
-
-enum class ColorModel : uint32_t
-{
-    Unknown,
-    RGB,
-    YCbCr
-};
-
-struct OutputColorSpace
-{
-    DXGI_COLOR_SPACE_TYPE dxgiColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-
-    ColorTransfer transfer = ColorTransfer::SRGB;
-    ColorPrimaries primaries = ColorPrimaries::Rec709;
-    ColorRange range = ColorRange::Full;
-    ColorModel model = ColorModel::RGB;
-
-    bool valid = false;
-};
-
 typedef struct CapturedHudlessInfo
 {
     UINT64 usageCount = 1;
@@ -132,11 +107,6 @@ class State
     std::string gameVersion;
     GameEngineType gameEngine = GameEngineType::Other;
 
-    // RE Engine detection + REFramework (dinput8.dll) presence in the game folder
-    bool isREEngine = false;
-    bool reframeworkMissing = false;
-    bool reframeworkNoticeShown = false;
-
     bool nvngxDx11Inited = false;
     bool nvngxDx12Inited = false;
     bool nvngxVkInited = false;
@@ -150,6 +120,12 @@ class State
     // FG
     uint64_t fgLastFrame = 0;
 
+    // Nvngx FG, uses streamline swapchain
+    bool nukemsFgFileAvailable = false;
+    bool artursFgFileAvailable = false;
+    bool dlssgDebugView = false;
+    bool dlssgInterpolatedOnly = false;
+    uint64_t dlssgLastFrame = 0;
     uint32_t delayMenuRenderBy = 0;
     bool menuOverlayIsVulkan = false;
 
@@ -329,8 +305,7 @@ class State
 
     // HDR
     std::vector<IUnknown*> scBuffers;
-    OutputColorSpace outputColorSpace {};
-    bool hdrOutputActive = false;
+    bool isHdrActive = false;
 
     std::optional<ApiUpscalerInput> setInputApiName;
     ApiUpscalerInput currentInputApiName;

@@ -197,7 +197,8 @@ HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkAmdExtD3DCreateInterface(IUnknown* pOu
     }
 #else
     else if (riid == IID_IAmdExtAntiLagApi && giveGameAl2Proxy &&
-             (StreamlineHooks::isReflexHooked() || State::Instance().activeFgInput == FGInput::DLSSG))
+             (StreamlineHooks::isReflexHooked() || State::Instance().activeFgInput == FGInput::NvngxFG ||
+              State::Instance().activeFgInput == FGInput::DLSSG))
     {
         *ppvObject = nullptr;
 
