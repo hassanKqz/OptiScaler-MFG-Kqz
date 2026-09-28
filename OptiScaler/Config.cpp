@@ -69,6 +69,30 @@ bool Config::Reload(std::filesystem::path iniPath)
         {
             FGEnabled.set_from_config(readBool("FrameGen", "Enabled"));
             ExternalFrameGeneration.set_from_config(readBool("FrameGen", "External"));
+            FGDLSSGAdaMfgUnlock.set_from_config(readBool("DLSSG", "AdaMfgUnlock"));
+            FGDLSSGAdaBlackwellKernels.set_from_config(readBool("DLSSG", "AdaBlackwellKernels"));
+            FGDLSSGAmpereMfgUnlock.set_from_config(readBool("DLSSG", "AmpereMfgUnlock"));
+            FGDLSSGAmpereMfgMaxFrames.set_from_config(readInt("DLSSG", "AmpereMfgMaxFrames"));
+            if (FGDLSSGAmpereMfgMaxFrames.has_value() &&
+                (FGDLSSGAmpereMfgMaxFrames.value() < 0 || FGDLSSGAmpereMfgMaxFrames.value() > 3))
+                FGDLSSGAmpereMfgMaxFrames.reset();
+
+            if (auto ampereKernel = readString("DLSSG", "AmpereMfgKernelImage"); ampereKernel.has_value())
+            {
+                if (lstrcmpiA(ampereKernel.value().c_str(), "ptx") == 0)
+                    FGDLSSGAmpereMfgKernelImage.set_from_config("PTX");
+                else if (lstrcmpiA(ampereKernel.value().c_str(), "cubin") == 0)
+                    FGDLSSGAmpereMfgKernelImage.set_from_config("Cubin");
+                else
+                    FGDLSSGAmpereMfgKernelImage.set_from_config("Auto");
+            }
+            FGDLSSGAmpereMfgHardwareBilinear.set_from_config(readBool("DLSSG", "AmpereMfgHardwareBilinear"));
+
+            if (FGDLSSGAmpereMfgUnlock.value_or_default())
+            {
+                ExternalFrameGeneration.set_from_config(true);
+                FGDLSSGAdaMfgUnlock.set_from_config(false);
+            }
             FGDebugView.set_from_config(readBool("FrameGen", "DebugView"));
 
             if (auto FGInputString = readString("FrameGen", "FGInput"); FGInputString.has_value())
@@ -214,9 +238,6 @@ bool Config::Reload(std::filesystem::path iniPath)
 
         {
             FGXeFGInterpolationCount.set_from_config(readInt("XeFG", "InterpolationCount"));
-            // Out of range is reset to the default rather than clamped, so an
-            // over-large value would otherwise look like the setting silently
-            // reverting to 2X.
             if (FGXeFGInterpolationCount.has_value() &&
                 (FGXeFGInterpolationCount.value() < 1 ||
                  FGXeFGInterpolationCount.value() > XeFGMaxInterpolations))
@@ -241,42 +262,11 @@ bool Config::Reload(std::filesystem::path iniPath)
         }
 
         {
-#if defined(OPTISCALER_RTX40_MFG)
-            FGDLSSGAdaMfgUnlock.set_from_config(readBool("DLSSG", "AdaMfgUnlock"));
-#endif
             FGDLSSGInterpolationCount.set_from_config(readInt("DLSSG", "InterpolationCount"));
             if (FGDLSSGInterpolationCount.has_value() &&
                 (FGDLSSGInterpolationCount.value() < 1 || FGDLSSGInterpolationCount.value() > 6))
                 FGDLSSGInterpolationCount.reset();
 
-            auto adaUnlock = readBool("DLSSG", "AdaMfgUnlock");
-            if (!adaUnlock.has_value())
-                adaUnlock = readBool("DLSSG", "UnlockAdaMFG");
-            FGDLSSGAdaMfgUnlock.set_from_config(adaUnlock);
-            FGDLSSGUnlockAdaMFG.set_from_config(adaUnlock);
-            FGDLSSGAdaBlackwellKernels.set_from_config(readBool("DLSSG", "AdaBlackwellKernels"));
-            FGDLSSGAmpereMfgUnlock.set_from_config(readBool("DLSSG", "AmpereMfgUnlock"));
-            FGDLSSGAmpereMfgMaxFrames.set_from_config(readInt("DLSSG", "AmpereMfgMaxFrames"));
-            if (FGDLSSGAmpereMfgMaxFrames.has_value() &&
-                (FGDLSSGAmpereMfgMaxFrames.value() < 0 || FGDLSSGAmpereMfgMaxFrames.value() > 5))
-                FGDLSSGAmpereMfgMaxFrames.reset();
-            if (auto ampereKernel = readString("DLSSG", "AmpereMfgKernelImage"); ampereKernel.has_value())
-            {
-                if (ampereKernel.value() == "PTX" || ampereKernel.value() == "ptx")
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("PTX");
-                else if (ampereKernel.value() == "Cubin" || ampereKernel.value() == "cubin")
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("Cubin");
-                else
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("Auto");
-            }
-            FGDLSSGAmpereMfgHardwareBilinear.set_from_config(readBool("DLSSG", "AmpereMfgHardwareBilinear"));
-            FGDLSSGAmpereNative6XRuntime.set_from_config(readBool("DLSSG", "AmpereNative6XRuntime"));
-            FGDLSSGQualityGuard.set_from_config(readBool("DLSSG", "QualityGuard"));
-            FGDLSSGBoundaryMitigation.set_from_config(readInt("DLSSG", "BoundaryMitigation"));
-            if (FGDLSSGBoundaryMitigation.has_value() &&
-                (FGDLSSGBoundaryMitigation.value() < 0 || FGDLSSGBoundaryMitigation.value() > 2))
-                FGDLSSGBoundaryMitigation.reset();
-            FGDLSSGForceFlipMeteringOff.set_from_config(readBool("DLSSG", "ForceFlipMeteringOff"));
             FGDLSSGUseGamesReflexMarkers.set_from_config(readBool("DLSSG", "UseGamesReflexMarkers"));
 
             FGDLSSGOverrideInterpolationCount.set_from_config(readInt("DLSSG", "OverrideInterpolationCount"));
@@ -842,7 +832,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             // Enable HAGS when DLSS-G will be used
             if (!SpoofHAGS.has_value())
             {
-                SpoofHAGS.set_volatile_value(FGInput.value_or_default() == FGInput::DLSSG);
+                SpoofHAGS.set_volatile_value(FGInput.value_or_default() == FGInput::NvngxFG ||
+                                             FGInput.value_or_default() == FGInput::DLSSG);
             }
         }
 
@@ -928,8 +919,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             FfxVkPath.set_from_config(readWString("Libraries", "FfxVkPath"));
 
             XeSSLibrary.set_from_config(readWString("Libraries", "XeSSPath"));
-            XeFGLibrary.set_from_config(readWString("Libraries", "XeFGPath"));
-            XeLLLibrary.set_from_config(readWString("Libraries", "XeLLPath"));
+            XeSSLibrary.set_from_config(readWString("Libraries", "XeFGPath"));
+            XeSSLibrary.set_from_config(readWString("Libraries", "XeLLPath"));
             XeSSDx11Library.set_from_config(readWString("Libraries", "XeSSDx11Path"));
         }
 
@@ -1018,12 +1009,25 @@ bool Config::SaveIni()
 
     // Frame Generation
     {
+        bool ampereUnlock = Instance()->FGDLSSGAmpereMfgUnlock.value_for_config_or(false);
+        bool adaUnlock = Instance()->FGDLSSGAdaMfgUnlock.value_for_config_or(false);
+        if (ampereUnlock && adaUnlock)
+            adaUnlock = false;
+
         ini.SetValue("FrameGen", "Enabled", GetBoolValue(Instance()->FGEnabled.value_for_config()).c_str());
-        // Discard settings from removed fork-only frame-generation extensions.
-        ini.Delete("FrameGen", "External");
-        for (const auto* key : { "AdaBlackwellKernels", "AmpereMfgUnlock", "AmpereMfgMaxFrames",
-                                "AmpereMfgKernelImage", "AmpereMfgHardwareBilinear" })
-            ini.Delete("DLSSG", key);
+        ini.SetValue(
+            "FrameGen", "External",
+            GetBoolValue(Instance()->ExternalFrameGeneration.value_for_config_or(false) || ampereUnlock).c_str());
+        ini.SetValue("DLSSG", "AdaMfgUnlock", GetBoolValue(adaUnlock).c_str());
+        ini.SetValue("DLSSG", "AdaBlackwellKernels",
+                     GetBoolValue(Instance()->FGDLSSGAdaBlackwellKernels.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "AmpereMfgUnlock", GetBoolValue(ampereUnlock).c_str());
+        ini.SetValue("DLSSG", "AmpereMfgMaxFrames",
+                     GetIntValue(Instance()->FGDLSSGAmpereMfgMaxFrames.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "AmpereMfgKernelImage",
+                     Instance()->FGDLSSGAmpereMfgKernelImage.value_for_config_or("auto").c_str());
+        ini.SetValue("DLSSG", "AmpereMfgHardwareBilinear",
+                     GetBoolValue(Instance()->FGDLSSGAmpereMfgHardwareBilinear.value_for_config()).c_str());
         ini.SetValue("FrameGen", "DebugView", GetBoolValue(Instance()->FGDebugView.value_for_config()).c_str());
         std::string FGInputString = "auto";
         if (auto FGInputHeld = Instance()->FGInput.value_for_config(); FGInputHeld.has_value())
@@ -1155,28 +1159,6 @@ bool Config::SaveIni()
     }
 
     {
-        ini.SetValue("DLSSG", "AdaMfgUnlock",
-                     GetBoolValue(Instance()->FGDLSSGAdaMfgUnlock.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "AdaBlackwellKernels",
-                     GetBoolValue(Instance()->FGDLSSGAdaBlackwellKernels.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "UnlockAdaMFG",
-                     GetBoolValue(Instance()->FGDLSSGAdaMfgUnlock.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "AmpereMfgUnlock",
-                     GetBoolValue(Instance()->FGDLSSGAmpereMfgUnlock.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "AmpereMfgMaxFrames",
-                     GetIntValue(Instance()->FGDLSSGAmpereMfgMaxFrames.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "AmpereMfgKernelImage",
-                     Instance()->FGDLSSGAmpereMfgKernelImage.value_for_config_or("Auto").c_str());
-        ini.SetValue("DLSSG", "AmpereMfgHardwareBilinear",
-                     GetBoolValue(Instance()->FGDLSSGAmpereMfgHardwareBilinear.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "AmpereNative6XRuntime",
-                     GetBoolValue(Instance()->FGDLSSGAmpereNative6XRuntime.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "QualityGuard",
-                     GetBoolValue(Instance()->FGDLSSGQualityGuard.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "BoundaryMitigation",
-                     GetIntValue(Instance()->FGDLSSGBoundaryMitigation.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "ForceFlipMeteringOff",
-                     GetBoolValue(Instance()->FGDLSSGForceFlipMeteringOff.value_for_config()).c_str());
         ini.SetValue("DLSSG", "InterpolationCount",
                      GetIntValue(Instance()->FGDLSSGInterpolationCount.value_for_config()).c_str());
         ini.SetValue("DLSSG", "UseGamesReflexMarkers",

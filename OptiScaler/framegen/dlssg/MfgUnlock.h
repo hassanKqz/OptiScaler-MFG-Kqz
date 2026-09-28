@@ -5,7 +5,7 @@
 
 #include <string>
 
-// Multi Frame Generation on Ada (RTX 40).
+// Multi Frame Generation on Ada.
 //
 // nvngx_dlssg.dll gates MFG on the architecture id reported by the driver: 0x1b0 is Blackwell, Ada
 // is below it. Two sites decide what a card is allowed to do, and both compare against that constant.
@@ -33,7 +33,7 @@
 //
 // Ada also runs a different interpolation kernel: Kernel_EstimateIntermMvecsScatter reads three f32
 // fields of its parameter block on sm_120 and one on sm_89, so every generated frame lands at the
-// same point between the two real ones. The Blackwell images are retargeted in place to answer for Ada.
+// same point between the two real ones. The Blackwell image is retargeted in place to answer for Ada.
 namespace MfgUnlock
 {
 // What the last attempt found. The signatures are version specific by construction -- they carry the
@@ -45,12 +45,7 @@ struct Status
     bool ModuleFound = false; // nvngx_dlssg.dll was loaded
     bool AdvertiseMatched = false;
     bool ValidateMatched = false;
-    unsigned int KernelsRewritten = 0; // Blackwell image retargeted for Ada
-    unsigned int TemporalFixPatches = 0; // descriptor slots redirected to the temporal-corrected kernel
-    std::string TemporalFixDetail;       // why the temporal fallback applied or failed
-    unsigned int BoundaryMitigationPatches = 0; // descriptor slots redirected to the guarded kernel
-    int BoundaryMitigationMode = 0;             // 0=off, 1=balanced, 2=aggressive for the last attempt
-    std::string BoundaryMitigationDetail;       // why the guard applied or failed
+    unsigned int KernelsRewritten = 0;
     std::string SnippetVersion; // file version of nvngx_dlssg.dll, empty if it could not be read
 };
 
@@ -60,9 +55,6 @@ const Status& LastStatus();
 // nvngx_dlssg.dll is not loaded, or when a signature does not match exactly once.
 void TryApply(HMODULE module = nullptr);
 bool Pending();
-
-// Checks if the primary GPU is an NVIDIA Ada Lovelace (RTX 40 series) GPU.
-bool IsSupportedGpu();
 
 // The generated frame ceiling the patches opened, or 0 when they did not land.
 unsigned int UnlockedMax();

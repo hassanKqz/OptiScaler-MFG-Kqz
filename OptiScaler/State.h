@@ -135,9 +135,10 @@ class State
 
     // Frame Generation
     FGInput activeFgInput = FGInput::NoFG;
+    bool externalFrameGeneration = false; // startup-only: do not switch hook ownership live
     FGOutput activeFgOutput = FGOutput::NoFG;
-    bool activeUnlockAdaMFG = false;
-    bool activeUnlockAmpereMFG = false;
+    // This should be set to a non-None value only if all other requirements are met and nvngx can be used
+    FGNvngxReplacement activeFgNvngx = FGNvngxReplacement::None;
 
     // Streamline FG inputs
     Sl_Inputs_Dx12 slFGInputs = {};
@@ -183,7 +184,6 @@ class State
     HMODULE optiSlReflex = nullptr;
     HMODULE optiSlPCL = nullptr;
     HMODULE optiDLSSG = nullptr;
-    HMODULE nativeDlssgModule = nullptr; // Native game's nvngx_dlssg.dll; never an OptiScaler module
 
     // NGX OTA
     std::string NGX_OTA_Dlss;

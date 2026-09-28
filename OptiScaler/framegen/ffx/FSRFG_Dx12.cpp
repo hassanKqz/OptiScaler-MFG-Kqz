@@ -712,27 +712,11 @@ ffxReturnCode_t FSRFG_Dx12::DispatchCallback(ffxDispatchDescFrameGeneration* par
         {
             auto cmdList = (ID3D12GraphicsCommandList*) params->commandList;
 
-            // Do not blindly trust the cached _device for callback helper creation
-            ID3D12Device* callbackDevice = nullptr;
-            HRESULT callbackDeviceResult = E_POINTER;
-
-            if (cmdList != nullptr)
-                callbackDeviceResult = cmdList->GetDevice(IID_PPV_ARGS(&callbackDevice));
-
-            if (callbackDevice == nullptr && presentWithHud != nullptr)
-                callbackDeviceResult = presentWithHud->GetDevice(IID_PPV_ARGS(&callbackDevice));
-
-            if (callbackDevice == nullptr)
-            {
-                LOG_ERROR("FSRFG HUD helper failed to resolve callback D3D12 device: {:X}",
-                          (UINT) callbackDeviceResult);
-            }
-
             if (applyHudCutoff)
             {
-                if (_hudCopy[fIndex].get() == nullptr && callbackDevice != nullptr)
+                if (_hudCopy[fIndex].get() == nullptr)
                 {
-                    _hudCopy[fIndex] = std::make_unique<HudCopy_Dx12>("HudCopy", callbackDevice);
+                    _hudCopy[fIndex] = std::make_unique<HudCopy_Dx12>("HudCopy", _device);
                 }
 
                 if (auto hudCopy = _hudCopy[fIndex].get(); hudCopy && hudCopy->IsInit())
@@ -758,12 +742,9 @@ ffxReturnCode_t FSRFG_Dx12::DispatchCallback(ffxDispatchDescFrameGeneration* par
             {
                 if (hudlessResource != nullptr)
                 {
-                    if (_hudlessCompareCompute[fIndex].get() == nullptr && callbackDevice != nullptr)
+                    if (_hudlessCompareCompute[fIndex].get() == nullptr)
                     {
-                        LOG_DEBUG("Creating HudlessCompareCompute on callback device {:X} (cached {:X})",
-                                  (size_t) callbackDevice, (size_t) _device);
-                        _hudlessCompareCompute[fIndex] =
-                            std::make_unique<HCC_Dx12>("HudlessCompareCompute", callbackDevice);
+                        _hudlessCompareCompute[fIndex] = std::make_unique<HCC_Dx12>("HudlessCompareCompute", _device);
                     }
 
                     if (auto hudlessCompareCompute = _hudlessCompareCompute[fIndex].get();
@@ -775,8 +756,6 @@ ffxReturnCode_t FSRFG_Dx12::DispatchCallback(ffxDispatchDescFrameGeneration* par
                     }
                 }
             }
-
-            SAFE_RELEASE(callbackDevice);
         }
     }
 
@@ -790,13 +769,7 @@ ffxReturnCode_t FSRFG_Dx12::DispatchCallback(ffxDispatchDescFrameGeneration* par
 
 FSRFG_Dx12::~FSRFG_Dx12() { Shutdown(); }
 
-bool FSRFG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount)
-{
-    if (interpolatedFrameCount != 1)
-        LOG_WARN("FSR FG is fixed at one interpolated frame (2X)");
-
-    return interpolatedFrameCount >= 1;
-}
+bool FSRFG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount) { return true; }
 
 void* FSRFG_Dx12::FrameGenerationContext()
 {
@@ -1120,8 +1093,7 @@ void FSRFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
 
     // use swapchain buffer info
     DXGI_SWAP_CHAIN_DESC desc {};
-    if ((_swapChain != nullptr && _swapChain->GetDesc(&desc) == S_OK) ||
-        State::Instance().currentSwapchain->GetDesc(&desc) == S_OK)
+    if (State::Instance().currentSwapchain->GetDesc(&desc) == S_OK)
     {
         createFg.displaySize = { desc.BufferDesc.Width, desc.BufferDesc.Height };
 
@@ -1395,9 +1367,6 @@ void FSRFG_Dx12::ReleaseObjects()
 {
     for (size_t i = 0; i < BUFFER_COUNT; i++)
     {
-        _hudCopy[i].reset();
-        _hudlessCompareCompute[i].reset();
-
         SAFE_RELEASE(_fgCommandAllocator[i]);
         SAFE_RELEASE(_fgCommandList[i]);
         SAFE_RELEASE(_uiCommandAllocator[i]);

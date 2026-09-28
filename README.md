@@ -1,7 +1,6 @@
-# OptiScaler-MFG — By Hassankqz
+# OptiScaler-MFG-Kqz — By Hassankqz
 
-**hassanKqz build** — merges the RTX 20/30/40 Multi‑Frame Generation unlock (MFG, up to x30's multiplier ceiling, XeFG passthrough included) with the DLSS Neural Rendering / PreSR / Multipass engine below.
-Base NR engine credit: [wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass). MFG unlock credit: see [NOTICE.md](NOTICE.md) and [MFG_IMPLEMENTATION.md](MFG_IMPLEMENTATION.md).
+**hassanKqz build**: DLSS Neural Rendering / PreSR / Multipass engine (base: [wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass)) combined with the **XeFG multi-frame-generation unlock (up to x30)** by Hassankqz. See [NOTICE.md](NOTICE.md) and [MFG_IMPLEMENTATION.md](MFG_IMPLEMENTATION.md).
 
 ---
 

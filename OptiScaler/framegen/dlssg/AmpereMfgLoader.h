@@ -12,14 +12,6 @@ struct Status
     bool DllFound = false;    // dlssg_sm86.dll found in OptiScaler/dlssg_sm86/
     bool IniWritten = false;  // dlssg_sm86.ini generated and written
     bool DllLoaded = false;   // LoadLibrary succeeded
-    bool ExperimentalRequested = false; // 5X/6X asked for in the config
-    bool ExperimentalPatched = false;   // hash-pinned loader patched and loaded
-    bool ExperimentalFallback = false;  // 5X/6X unavailable; proven 4X path kept
-    std::string ExperimentalDetail;     // why the experimental patch applied or failed
-    bool Native6XRequested = false;     // Config opted into the sdli1995 0.3.x runtime
-    bool Native6XRuntimeFound = false;  // A hash-pinned 0.3.x binary is in the sidecar folder
-    bool Native6XActive = false;        // That runtime is the one being loaded, used as-is
-    std::string Native6XDetail;         // Version/ceiling detail for logs, menu and reports
     std::string ErrorMessage; // Human-readable error if anything failed
 };
 
@@ -28,20 +20,17 @@ Status LastStatus();
 /// Called after DLL initialization, once GPU/environment information is available.
 void TrySetup();
 
-/// Writes dlssg_sm86.ini to all target locations (beside DLL, game root, OptiScaler dir).
-void WriteIniFiles();
-
-/// Formats dlssg_sm86.ini content with Native 0.2.4 specification and strict clamping.
-inline std::string FormatIniContent(int maxFrames, const std::string& kernelImg, int hwBilinear = 0, const std::string& router = "SM86", int logLevel = 1)
+/// Formats dlssg_sm86.ini content with Native 0.2.3 specification and strict clamping.
+inline std::string FormatIniContent(int maxFrames, const std::string& kernelImg, int hwBilinear = 0,
+                                    const std::string& router = "SM86", int logLevel = 1)
 {
-    // Native 0.2.4 accepts 1, 2 or 3. The experimental 5X/6X loaders are hash-pinned builds
-    // whose parser bound was raised, so 4 and 5 are written only for those patched copies.
-    if (maxFrames <= 0 || maxFrames > 5)
+    // Native 0.2.3 strictly requires: MaxGeneratedFrames must be 1, 2 or 3
+    if (maxFrames <= 0 || maxFrames > 3)
         maxFrames = 3;
 
     std::string validKernel = kernelImg;
     if (validKernel != "PTX" && validKernel != "Cubin")
-        validKernel = "PTX";
+        validKernel = "Auto";
 
     std::string validRouter = router;
     if (validRouter != "SM75" && validRouter != "SM86")
@@ -51,7 +40,7 @@ inline std::string FormatIniContent(int maxFrames, const std::string& kernelImg,
     int validLogLevel = (logLevel >= 0 && logLevel <= 3) ? logLevel : 1;
 
     std::ostringstream ss;
-    ss << "; Native 0.2.4. Restart the game after changing this file.\n";
+    ss << "; Native 0.2.3. Restart the game after changing this file.\n";
     ss << "[Compatibility]\n";
     ss << "Router=" << validRouter << "\n";
     ss << "KernelImage=" << validKernel << "\n";
@@ -64,51 +53,11 @@ inline std::string FormatIniContent(int maxFrames, const std::string& kernelImg,
     return ss.str();
 }
 
-/// Formats dlssg_sm86.ini for the sdli1995 0.3.x proxy runtime. The 0.3.x loader derives its
-/// ceiling from [FrameGeneration] MaxGeneratedFrames (3 = 4X; 5 = 6X on the 310.9 build only,
-/// the 310.1 build clamps it back to 3 and just logs it). The runtime is used exactly as
-/// shipped: this INI is the only thing written for it.
-inline std::string FormatNativeIniContent(int maxFrames, const std::string& router = "SM86", int logLevel = 1)
-{
-    if (maxFrames != 3 && maxFrames != 5)
-        maxFrames = 3;
-
-    std::string validRouter = router;
-    if (validRouter != "SM75" && validRouter != "SM86")
-        validRouter = "SM86";
-
-    int validLogLevel = (logLevel >= 0 && logLevel <= 3) ? logLevel : 1;
-
-    std::ostringstream ss;
-    ss << "; sdli1995 0.3.x native runtime. Restart the game after changing this file.\n";
-    ss << "[General]\n";
-    ss << "Enabled=1\n\n";
-    ss << "[FrameGeneration]\n";
-    ss << "Optimized=1\n";
-    ss << "MaxGeneratedFrames=" << maxFrames << "\n\n";
-    ss << "[Compatibility]\n";
-    ss << "Router=" << validRouter << "\n\n";
-    ss << "[Logging]\n";
-    ss << "Level=" << validLogLevel << "\n";
-    ss << "Directory=dlssg_sm86\\logs\n\n";
-    ss << "[Runtime]\n";
-    ss << "Mode=Bundled\n";
-    ss << "CacheDirectory=\n";
-
-    return ss.str();
-}
-
 /// Checks if an architecture ID represents Turing (SM75).
-inline bool IsTuringArch(uint32_t archId)
-{
-    return (archId == 0x00000160) || ((archId & 0xFFF0) == 0x0160);
-}
+inline bool IsTuringArch(uint32_t archId) { return (archId == 0x00000160) || ((archId & 0xFFF0) == 0x0160); }
 
 /// Checks if an architecture ID represents Ampere (SM86).
-inline bool IsAmpereArch(uint32_t archId)
-{
-    return (archId == 0x00000170) || ((archId & 0xFFF0) == 0x0170);
-}
+inline bool IsAmpereArch(uint32_t archId) { return (archId == 0x00000170) || ((archId & 0xFFF0) == 0x0170); }
 
 /// Resolves router string ("SM75" or "SM86") based on architecture ID and GPU name.
 inline std::string ResolveRouter(uint32_t archId, const std::string& gpuName = "")
@@ -121,13 +70,11 @@ inline std::string ResolveRouter(uint32_t archId, const std::string& gpuName = "
     // Fallback: name matching
     if (!gpuName.empty())
     {
-        if (gpuName.find("RTX 20") != std::string::npos ||
-            gpuName.find("GTX 16") != std::string::npos ||
+        if (gpuName.find("RTX 20") != std::string::npos || gpuName.find("GTX 16") != std::string::npos ||
             gpuName.find("Turing") != std::string::npos)
             return "SM75";
 
-        if (gpuName.find("RTX 30") != std::string::npos ||
-            gpuName.find("Ampere") != std::string::npos)
+        if (gpuName.find("RTX 30") != std::string::npos || gpuName.find("Ampere") != std::string::npos)
             return "SM86";
     }
 
@@ -145,7 +92,11 @@ std::string ResolveAutoKernelImage();
 
 inline std::string ResolveAutoKernelImage(uint32_t archId, const std::string& name, bool onLinux)
 {
-    // PTX uses driver JIT compilation and guarantees exact SM matching and stability across all Ampere/Turing models
-    return "PTX";
+    return onLinux || IsTuringArch(archId) || name.find("RTX 20") != std::string::npos ||
+                   name.find("GTX 16") != std::string::npos || name.find("3080 Ti") != std::string::npos ||
+                   name.find("3080Ti") != std::string::npos || name.find("Laptop") != std::string::npos ||
+                   name.find("Mobile") != std::string::npos
+               ? "PTX"
+               : "Auto";
 }
 } // namespace AmpereMfgLoader

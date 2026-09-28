@@ -39,8 +39,6 @@
 #include <hooks/Crypt32_Hooks.h>
 #include <hooks/Advapi32_Hooks.h>
 #include <hooks/Streamline_Hooks.h>
-#include <framegen/dlssg/MfgUnlock.h>
-#include <framegen/dlssg/AmpereMfgLoader.h>
 
 #include <nvapi/NvApiHooks.h>
 
@@ -1506,7 +1504,8 @@ static void CheckQuirks(bool isNvidia)
         quirks.reset(GameQuirk::UseFsr2VulkanInputs);
 
     if (quirks & GameQuirk::ForceBorderlessWhenUsingXeFG && !Config::Instance()->FGXeFGForceBorderless.has_value() &&
-        State::Instance().activeFgOutput == FGOutput::XeFG && State::Instance().activeFgInput != FGInput::NoFG)
+        State::Instance().activeFgOutput == FGOutput::XeFG && State::Instance().activeFgInput != FGInput::NoFG &&
+        State::Instance().activeFgInput != FGInput::NvngxFG)
     {
         Config::Instance()->FGXeFGForceBorderless.set_volatile_value(true);
     }
@@ -1514,7 +1513,8 @@ static void CheckQuirks(bool isNvidia)
         quirks.reset(GameQuirk::ForceBorderlessWhenUsingXeFG);
 
     if (quirks & GameQuirk::OverrideVsyncWhenUsingXeFG && !Config::Instance()->OverrideVsync.has_value() &&
-        State::Instance().activeFgOutput == FGOutput::XeFG && State::Instance().activeFgInput != FGInput::NoFG)
+        State::Instance().activeFgOutput == FGOutput::XeFG && State::Instance().activeFgInput != FGInput::NoFG &&
+        State::Instance().activeFgInput != FGInput::NvngxFG)
     {
         Config::Instance()->OverrideVsync.set_volatile_value(true);
     }
@@ -1755,22 +1755,9 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
     if (hModuleVoid)
         IdentifyGpu::updateD3d12Capabilities();
 
-    // Native NVIDIA MFG unlockers stay opt-in. The SM86/SM75 sideload initializes whenever its
-    // config option is enabled on a Turing/Ampere GPU, without waiting for the game to load
-    // DLSS-G first; the per-game native flow decides later whether the patch is applied.
-    State::Instance().activeUnlockAdaMFG = false;
-    State::Instance().activeUnlockAmpereMFG = false;
-
-    if (primaryGpu.vendorId == VendorId::Nvidia)
-    {
-        AmpereMfgLoader::TrySetup();
-
-        // Same latch rule as the Ada unlock: only when the sidecar actually loaded. Otherwise the
-        // menu keeps asking for the restart that has not produced an unlock yet.
-        if (AmpereMfgLoader::LastStatus().DllLoaded &&
-            Config::Instance()->FGDLSSGAmpereMfgUnlock.value_or_default())
-            State::Instance().activeUnlockAmpereMFG = true;
-    }
+    // This existing worker runs after DLL_PROCESS_ATTACH has returned. GPU
+    // enumeration and loading another graphics proxy must not run in DllMain.
+    AmpereMfgLoader::TrySetup();
 
     return 0;
 }
@@ -1844,7 +1831,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         PrepareLogger();
 
-        spdlog::warn("evairx/OptiScalerMFG {0} loaded", VER_PRODUCT_VERSION_STR);
+        spdlog::warn("{0} loaded", VER_PRODUCT_NAME);
         spdlog::warn("---------------------------------");
         spdlog::warn("OptiScaler is freely downloadable from");
         spdlog::warn("GitHub : https://github.com/optiscaler/OptiScaler/releases");
@@ -1877,25 +1864,22 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #endif
 
         // Initial state of FG
-        State::Instance().activeFgInput = Config::Instance()->FGInput.value_or_default();
-        State::Instance().activeFgOutput = Config::Instance()->FGOutput.value_or_default();
-        // If no FG input is configured, FG output cannot be active (prevents invalid swapchain hook conflicts)
-        if (State::Instance().activeFgInput == FGInput::NoFG)
-            State::Instance().activeFgOutput = FGOutput::NoFG;
-
-        // Initialize native-game MFG unlockers only after native DLSS-G was identified.
-        if (StreamlineHooks::isNativeDlssgAvailable() &&
-            State::Instance().activeFgInput == FGInput::DLSSG &&
-            State::Instance().activeFgOutput == FGOutput::NoFG)
+        State::Instance().externalFrameGeneration = Config::Instance()->ExternalFrameGeneration.value_or_default() ||
+                                                    Config::Instance()->FGDLSSGAmpereMfgUnlock.value_or_default();
+        if (State::Instance().externalFrameGeneration)
         {
-            State::Instance().activeUnlockAdaMFG = Config::Instance()->FGDLSSGAdaMfgUnlock.value_or(
-                Config::Instance()->FGDLSSGUnlockAdaMFG.value_or_default());
-            State::Instance().activeUnlockAmpereMFG = Config::Instance()->FGDLSSGAmpereMfgUnlock.value_or_default();
-        }
-        else
-        {
-            State::Instance().activeUnlockAdaMFG = false;
-            State::Instance().activeUnlockAmpereMFG = false;
+            // Only runtime overrides: preserve the user's OptiFG configuration for the next
+            // startup with External=false. Do not load a second FG provider or change Reflex.
+            auto* cfg = Config::Instance();
+            cfg->FGInput.set_volatile_value(FGInput::NoFG);
+            cfg->FGOutput.set_volatile_value(FGOutput::NoFG);
+            cfg->FGNvngxReplacement.set_volatile_value(FGNvngxReplacement::None);
+            cfg->FGEnabled.set_volatile_value(false);
+            cfg->ForceXeLL.set_volatile_value(false);
+            cfg->UseFakenvapi.set_volatile_value(false);
+            cfg->FN_ForceReflex.set_volatile_value(ForceReflex::InGame);
+            LOG_INFO("External frame generation: leaving Streamline/Reflex and MFG control to the game or unlocker; "
+                     "NR/SR remain available");
         }
 
         // Init Kernel proxies
@@ -2017,18 +2001,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         State::Instance().NVNGX_DLSSG_Path = Util::FindFilePath(optiDllPath, "nvngx_dlssg.dll");
         if (!State::Instance().NVNGX_DLSSG_Path.has_value())
             State::Instance().NVNGX_DLSSG_Path = Util::FindFilePath(exePath, "nvngx_dlssg.dll");
-        if (!State::Instance().NVNGX_DLSSG_Path.has_value())
-        {
-            auto optiDlssg = optiDllPath / "OptiScaler" / "nvngx_dlssg.dll";
-            if (std::filesystem::exists(optiDlssg))
-                State::Instance().NVNGX_DLSSG_Path = optiDlssg.wstring();
-            else
-            {
-                auto optiSlDlssg = optiDllPath / "OptiScaler" / "streamline" / "nvngx_dlssg.dll";
-                if (std::filesystem::exists(optiSlDlssg))
-                    State::Instance().NVNGX_DLSSG_Path = optiSlDlssg.wstring();
-            }
-        }
 
         // Not 100% accurate for Nvidia cards without DLSS
         if (Config::Instance()->DLSSEnabled.value_or_default() && possibleNvidia)

@@ -798,6 +798,13 @@ class Config
     // Frame Generation
     CustomOptional<FGInput> FGInput { FGInput::NoFG };
     CustomOptional<bool> ExternalFrameGeneration { false };
+    CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
+    CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels;
+    // Ampere/Turing (SM86/SM75) MFG unlocker — sideloads the dlssg_for_sm86 proxy
+    CustomOptional<bool> FGDLSSGAmpereMfgUnlock { false };
+    CustomOptional<int> FGDLSSGAmpereMfgMaxFrames { 3 };                // 0-3: 0=runtime default (3X), 1=2X, 2=3X, 3=4X
+    CustomOptional<std::string, NoDefault> FGDLSSGAmpereMfgKernelImage; // Auto / PTX / Cubin
+    CustomOptional<bool> FGDLSSGAmpereMfgHardwareBilinear { false };    // Optional approximate sampling (SM86 only)
     CustomOptional<FGOutput> FGOutput { FGOutput::NoFG };
     CustomOptional<FGNvngxReplacement> FGNvngxReplacement { FGNvngxReplacement::None };
     CustomOptional<bool> FGDrawUIOverFG { false };
@@ -885,9 +892,7 @@ class Config
     CustomOptional<int> FGXeFGInterpolationCount { 1 };
     CustomOptional<bool> FGXeFGUnlockEnabled { true };
     // What the unlock patch writes as the provider's reported maximum, and what
-    // the MFG menu offers. The same number is declared to the provider as the
-    // swapchain's maxInterpolatedFrames at init on every launch, so it is not
-    // only a menu bound. Default 5 (6X) is the top of the tested range; the
+    // the MFG menu offers. Default 5 (6X) is the top of the tested range; the
     // ini accepts 1..31, but above 6X is untested and the way back is to lower
     // XeFG\MaxInterpolatedFrames.
     CustomOptional<int> FGXeFGMaxInterpolatedFrames { 5 };
@@ -900,18 +905,7 @@ class Config
     CustomOptional<bool> FGXeFGForceBorderless { false };
 
     // DLSSG
-    CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };         // In-memory RTX 40 MFG unlock
-    CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels; // Automatically retarget Blackwell kernels to Ada sm_89
-    CustomOptional<bool> FGDLSSGUnlockAdaMFG { false };         // Backward compatibility alias
-    CustomOptional<bool> FGDLSSGAmpereMfgUnlock { false };       // Sideloads SM86/SM75 MFG for RTX 30 / RTX 20
-    CustomOptional<int> FGDLSSGAmpereMfgMaxFrames { 3 };        // 0-5: 0=runtime default (3X), 1=2X, 2=3X, 3=4X, 4=5X (experimental), 5=6X (experimental)
-    CustomOptional<std::string, NoDefault> FGDLSSGAmpereMfgKernelImage;     // Auto / PTX / Cubin
-    CustomOptional<bool> FGDLSSGAmpereMfgHardwareBilinear { false };        // Optional approximate sampling (SM86 only)
-    CustomOptional<bool> FGDLSSGAmpereNative6XRuntime { false };            // Experimental: hash-pinned sdli1995 0.3.x runtime dropped in the sidecar folder, used as-is for native 6X
-    CustomOptional<bool> FGDLSSGQualityGuard { true };          // Quality Guard: filters mismatched HUD separation in 3X/4X to prevent flickering
-    CustomOptional<int> FGDLSSGBoundaryMitigation { 1 };        // 0=off, 1=balanced (upstream 1.0 default), 2=aggressive
-    CustomOptional<bool> FGDLSSGForceFlipMeteringOff { true };  // Software flip pacing (RSYNC) for Ada multi-frame (prevents presentation freezes and black lines in 3X/4X)
-    CustomOptional<int> FGDLSSGInterpolationCount { 1 };        // For Opti's own SL instance
+    CustomOptional<int> FGDLSSGInterpolationCount { 1 }; // For Opti's own SL instance
     CustomOptional<bool> FGDLSSGUseGamesReflexMarkers { true };
     CustomOptional<int, NoDefault>
         FGDLSSGOverrideInterpolationCount; // For overriding game's value sent to SL, could be Nvngx FG, could be noFG
