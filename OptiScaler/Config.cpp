@@ -68,31 +68,6 @@ bool Config::Reload(std::filesystem::path iniPath)
         // Frame Generation
         {
             FGEnabled.set_from_config(readBool("FrameGen", "Enabled"));
-            ExternalFrameGeneration.set_from_config(readBool("FrameGen", "External"));
-            FGDLSSGAdaMfgUnlock.set_from_config(readBool("DLSSG", "AdaMfgUnlock"));
-            FGDLSSGAdaBlackwellKernels.set_from_config(readBool("DLSSG", "AdaBlackwellKernels"));
-            FGDLSSGAmpereMfgUnlock.set_from_config(readBool("DLSSG", "AmpereMfgUnlock"));
-            FGDLSSGAmpereMfgMaxFrames.set_from_config(readInt("DLSSG", "AmpereMfgMaxFrames"));
-            if (FGDLSSGAmpereMfgMaxFrames.has_value() &&
-                (FGDLSSGAmpereMfgMaxFrames.value() < 0 || FGDLSSGAmpereMfgMaxFrames.value() > 3))
-                FGDLSSGAmpereMfgMaxFrames.reset();
-
-            if (auto ampereKernel = readString("DLSSG", "AmpereMfgKernelImage"); ampereKernel.has_value())
-            {
-                if (lstrcmpiA(ampereKernel.value().c_str(), "ptx") == 0)
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("PTX");
-                else if (lstrcmpiA(ampereKernel.value().c_str(), "cubin") == 0)
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("Cubin");
-                else
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("Auto");
-            }
-            FGDLSSGAmpereMfgHardwareBilinear.set_from_config(readBool("DLSSG", "AmpereMfgHardwareBilinear"));
-
-            if (FGDLSSGAmpereMfgUnlock.value_or_default())
-            {
-                ExternalFrameGeneration.set_from_config(true);
-                FGDLSSGAdaMfgUnlock.set_from_config(false);
-            }
             FGDebugView.set_from_config(readBool("FrameGen", "DebugView"));
 
             if (auto FGInputString = readString("FrameGen", "FGInput"); FGInputString.has_value())
@@ -209,6 +184,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             FGHUDLimit.set_from_config(readInt("OptiFG", "HUDLimit"));
             FGHUDFixExtended.set_from_config(readBool("OptiFG", "HUDFixExtended"));
             FGImmediateCapture.set_from_config(readBool("OptiFG", "HUDFixImmediate"));
+            FGHudfixPersistentBindings.set_from_config(readBool("OptiFG", "HUDFixPersistentBindings"));
             FGUseShards.set_from_config(readBool("OptiFG", "UseShards"));
             FGAlwaysTrackHeaps.set_from_config(readBool("OptiFG", "AlwaysTrackHeaps"));
             FGResourceBlocking.set_from_config(readBool("OptiFG", "ResourceBlocking"));
@@ -239,15 +215,13 @@ bool Config::Reload(std::filesystem::path iniPath)
         {
             FGXeFGInterpolationCount.set_from_config(readInt("XeFG", "InterpolationCount"));
             if (FGXeFGInterpolationCount.has_value() &&
-                (FGXeFGInterpolationCount.value() < 1 ||
-                 FGXeFGInterpolationCount.value() > XeFGMaxInterpolations))
+                (FGXeFGInterpolationCount.value() < 1 || FGXeFGInterpolationCount.value() > XeFGMaxInterpolations))
                 FGXeFGInterpolationCount.reset();
 
             FGXeFGUnlockEnabled.set_from_config(readBool("XeFG", "UnlockMFG"));
             FGXeFGMaxInterpolatedFrames.set_from_config(readInt("XeFG", "MaxInterpolatedFrames"));
             if (FGXeFGMaxInterpolatedFrames.has_value() &&
-                (FGXeFGMaxInterpolatedFrames.value() < 1 ||
-                 FGXeFGMaxInterpolatedFrames.value() > XeFGMaxInterpolations))
+                (FGXeFGMaxInterpolatedFrames.value() < 1 || FGXeFGMaxInterpolatedFrames.value() > XeFGMaxInterpolations))
                 FGXeFGMaxInterpolatedFrames.reset();
 
             FGXeFGExtraPacing.set_from_config(readBool("XeFG", "ExtraPacing"));
@@ -262,6 +236,21 @@ bool Config::Reload(std::filesystem::path iniPath)
         }
 
         {
+#if defined(OPTISCALER_RTX40_MFG)
+            FGDLSSGAdaMfgUnlock.set_from_config(readBool("DLSSG", "AdaMfgUnlock"));
+
+            if (auto adaFix = readString("DLSSG", "AdaTemporalFix"); adaFix.has_value())
+            {
+                if (lstrcmpiA(adaFix.value().c_str(), "retarget") == 0)
+                    FGDLSSGAdaTemporalFix.set_from_config("Retarget");
+                else if (lstrcmpiA(adaFix.value().c_str(), "ptx") == 0)
+                    FGDLSSGAdaTemporalFix.set_from_config("Ptx");
+                else
+                    FGDLSSGAdaTemporalFix.set_from_config("Auto");
+            }
+
+            FGDLSSGAdaFlipMeteringPatch.set_from_config(readBool("DLSSG", "AdaFlipMeteringPatch"));
+#endif
             FGDLSSGInterpolationCount.set_from_config(readInt("DLSSG", "InterpolationCount"));
             if (FGDLSSGInterpolationCount.has_value() &&
                 (FGDLSSGInterpolationCount.value() < 1 || FGDLSSGInterpolationCount.value() > 6))
@@ -352,24 +341,22 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
-            DlssNrRunBeforeSr.set_from_config(readBool("DlssNr", "RunBeforeSR"));
+            auto nrBeforeSr = readBool("DlssNr", "RunBeforeSR");
+            if (!nrBeforeSr.has_value())
+                nrBeforeSr = readBool("DlssNr", "BeforeUpscale");
+            DlssNrRunBeforeSr.set_from_config(nrBeforeSr);
             DlssNrFinishedPicture.set_from_config(readBool("DlssNr", "FinishedPicture"));
+            DlssNrHdrTransfer.set_from_config(readBool("DlssNr", "HdrTransfer"));
             DlssNrDeferredDlss.set_from_config(readBool("DlssNr", "DeferredDLSS"));
+            DlssNrPrivateUpscaler.set_from_config(readInt("DlssNr", "PrivateUpscaler"));
             DlssNrResidualAcrossRr.set_from_config(readBool("DlssNr", "ResidualAcrossRR"));
             DlssNrResidualAcrossRrBlend.set_from_config(readFloat("DlssNr", "ResidualAcrossRRBlend"));
-            DlssNrResidualFg.set_from_config(readBool("DlssNr", "ResidualFG"));
-            DlssNrPrecision.set_from_config(readUInt("DlssNr", "Precision"));
-            if (DlssNrPrecision.value_or_default() != 4)
-                DlssNrPrecision = 0u;
-            DlssNrResidualFgApproxCamera.set_from_config(readBool("DlssNr", "ResidualFGApproxCamera"));
             DlssNrToggleKey.set_from_config(readInt("DlssNr", "ToggleKey"));
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
             DlssNrColourStrength.set_from_config(readFloat("DlssNr", "ColourStrength"));
             DlssNrMaxRatio.set_from_config(readFloat("DlssNr", "MaxRatio"));
             DlssNrTransfer.set_from_config(readUInt("DlssNr", "Transfer"));
 
-            DlssNrWhitePointFromExposure.set_from_config(readBool("DlssNr", "WhitePointFromExposure"));
-            DlssNrProbeD3D11.set_from_config(readBool("DlssNr", "ProbeD3D11"));
             DlssNrDebugView.set_from_config(readUInt("DlssNr", "DebugView"));
             DlssNrCompare.set_from_config(readUInt("DlssNr", "Compare"));
             DlssNrCompareSplit.set_from_config(readFloat("DlssNr", "CompareSplit"));
@@ -378,69 +365,59 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrCompareTags.set_from_config(readBool("DlssNr", "CompareTags"));
             DlssNrTagScale.set_from_config(readFloat("DlssNr", "TagScale"));
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
+            DlssNrSpatialCompression.set_from_config(readBool("DlssNr", "SpatialCompression"));
+            DlssNrSpatialCenterX.set_from_config(readFloat("DlssNr", "SpatialCenterX"));
+            DlssNrSpatialCenterY.set_from_config(readFloat("DlssNr", "SpatialCenterY"));
+            DlssNrSpatialWorkX.set_from_config(readFloat("DlssNr", "SpatialWorkX"));
+            DlssNrSpatialWorkY.set_from_config(readFloat("DlssNr", "SpatialWorkY"));
+            DlssNrSpatialOffsetX.set_from_config(readFloat("DlssNr", "SpatialOffsetX"));
+            DlssNrSpatialOffsetY.set_from_config(readFloat("DlssNr", "SpatialOffsetY"));
+            DlssNrSpatialShiftX.set_from_config(readFloat("DlssNr", "SpatialShiftX"));
+            DlssNrSpatialShiftY.set_from_config(readFloat("DlssNr", "SpatialShiftY"));
+            DlssNrSpatialShowCenter.set_from_config(readBool("DlssNr", "SpatialShowCenter"));
+            DlssNrSpatialShowWork.set_from_config(readBool("DlssNr", "SpatialShowWork"));
 
             if (auto v = readEnum<Scaler>("DlssNr", "ScalingDownscaler"))
                 DlssNrScalingDownscaler.set_from_config(*v);
             else
                 DlssNrScalingDownscaler.reset();
-            DlssNrProxyProbe.set_from_config(readBool("DlssNr", "ProxyProbe"));
-            DlssNrUseProxy.set_from_config(readBool("DlssNr", "UseProxy"));
-            DlssNrScanExposure.set_from_config(readBool("DlssNr", "ScanExposure"));
-            DlssNrWhitePointSource.set_from_config(readUInt("DlssNr", "WhitePointSource"));
-
-            // Migrate the retired flag only when the new key was genuinely absent, which is why this
-            // has to run AFTER the read above -- set_from_config assigns only into an empty optional,
-            // so an ini that carries both keys keeps its explicit WhitePointSource.
-            if (!DlssNrWhitePointSource.has_value() && DlssNrWhitePointFromExposure.has_value())
-                DlssNrWhitePointSource = DlssNrWhitePointFromExposure.value() ? 1u : 0u;
-            DlssNrScanMeter.set_from_config(readBool("DlssNr", "ScanMeter"));
-            DlssNrScanTrim.set_from_config(readFloat("DlssNr", "ScanTrim"));
             DlssNrPasses.set_from_config(readUInt("DlssNr", "Passes"));
-            DlssNrScanAnchorValue.set_from_config(readFloat("DlssNr", "ScanAnchorValue"));
-            DlssNrScanAnchorWhitePoint.set_from_config(readFloat("DlssNr", "ScanAnchorWhitePoint"));
-            DlssNrScanAnchors.set_from_config(readString("DlssNr", "ScanAnchors"));
-            DlssNrScanInverted.set_from_config(readBool("DlssNr", "ScanInverted"));
-            DlssNrWhitePointTrim.set_from_config(readFloat("DlssNr", "WhitePointTrim"));
-            DlssNrAutoCapture.set_from_config(readBool("DlssNr", "AutoCapture"));
             DlssNrWhitePointScale.set_from_config(readFloat("DlssNr", "WhitePointScale"));
+            DlssNrReplaceDetailStrength.set_from_config(readFloat("DlssNr", "ReplaceDetailStrength"));
+            DlssNrResidualConfidenceSensitivity.set_from_config(readFloat("DlssNr", "ResidualConfidenceSensitivity"));
+            DlssNrWhitePointSource.set_from_config(readUInt("DlssNr", "WhitePointSource"));
+            DlssNrWhitePointTrim.set_from_config(readFloat("DlssNr", "WhitePointTrim"));
+            DlssNrAutoExposureTrim.set_from_config(readFloat("DlssNr", "AutoExposureTrim"));
+            DlssNrAutoExposureHighlightProtection.set_from_config(
+                readFloat("DlssNr", "AutoExposureHighlightProtection"));
+            DlssNrExposureTrimAnchors.set_from_config(readString("DlssNr", "ExposureTrimAnchors"));
+            DlssNrAutoExposureTrimAnchors.set_from_config(readString("DlssNr", "AutoExposureTrimAnchors"));
+
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
             DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
             DlssNrStyle.set_from_config(readUInt("DlssNr", "Style"));
-            DlssNrPass2Preset.set_from_config(readUInt("DlssNr", "Pass2Preset"));
-            DlssNrPass2Style.set_from_config(readUInt("DlssNr", "Pass2Style"));
-            DlssNrPass3Preset.set_from_config(readUInt("DlssNr", "Pass3Preset"));
-            DlssNrPass3Style.set_from_config(readUInt("DlssNr", "Pass3Style"));
             DlssNrLocalStructure.set_from_config(readFloat("DlssNr", "LocalStructure"));
             DlssNrLocalTone.set_from_config(readFloat("DlssNr", "LocalTone"));
             DlssNrSkinStructure.set_from_config(readFloat("DlssNr", "SkinStructure"));
             DlssNrAutoMask.set_from_config(readBool("DlssNr", "AutoMask"));
             DlssNrSkinProtection.set_from_config(readBool("DlssNr", "SkinProtection"));
-            DlssNrSkinToneEnabled.set_from_config(readBool("DlssNr", "SkinToneEnabled"));
             DlssNrSkinDetail.set_from_config(readFloat("DlssNr", "SkinDetail"));
             DlssNrSkinColour.set_from_config(readFloat("DlssNr", "SkinColour"));
             DlssNrEnvironmentDetail.set_from_config(readFloat("DlssNr", "EnvironmentDetail"));
             DlssNrEnvironmentColour.set_from_config(readFloat("DlssNr", "EnvironmentColour"));
             DlssNrShowSkinMask.set_from_config(readBool("DlssNr", "ShowSkinMask"));
-            DlssNrPass2Intensity.set_from_config(readFloat("DlssNr", "Pass2Intensity"));
-            DlssNrPass2LocalStructure.set_from_config(readFloat("DlssNr", "Pass2LocalStructure"));
-            DlssNrPass2LocalTone.set_from_config(readFloat("DlssNr", "Pass2LocalTone"));
-            DlssNrPass2SkinStructure.set_from_config(readFloat("DlssNr", "Pass2SkinStructure"));
-            DlssNrPass2AutoMask.set_from_config(readBool("DlssNr", "Pass2AutoMask"));
-            DlssNrPass3Intensity.set_from_config(readFloat("DlssNr", "Pass3Intensity"));
-            DlssNrPass3LocalStructure.set_from_config(readFloat("DlssNr", "Pass3LocalStructure"));
-            DlssNrPass3LocalTone.set_from_config(readFloat("DlssNr", "Pass3LocalTone"));
-            DlssNrPass3SkinStructure.set_from_config(readFloat("DlssNr", "Pass3SkinStructure"));
-            DlssNrPass3AutoMask.set_from_config(readBool("DlssNr", "Pass3AutoMask"));
             DlssNrUnlockPasses.set_from_config(readBool("DlssNr", "UnlockPasses"));
-            for (unsigned int i = 0; i < 27; ++i)
+            for (unsigned int i = 0; i < std::size(DlssNrPassOverrides); ++i)
             {
-                auto& pass = DlssNrExtraPasses[i];
-                pass.style.set_from_config(readUInt("DlssNr", std::format("Pass{}Style", i + 4).c_str()));
-                pass.intensity.set_from_config(readFloat("DlssNr", std::format("Pass{}Intensity", i + 4).c_str()));
-                pass.structure.set_from_config(readFloat("DlssNr", std::format("Pass{}LocalStructure", i + 4).c_str()));
-                pass.tone.set_from_config(readFloat("DlssNr", std::format("Pass{}LocalTone", i + 4).c_str()));
-                pass.skin.set_from_config(readFloat("DlssNr", std::format("Pass{}SkinStructure", i + 4).c_str()));
-                pass.autoMask.set_from_config(readBool("DlssNr", std::format("Pass{}AutoMask", i + 4).c_str()));
+                auto& pass = DlssNrPassOverrides[i];
+                if (i < 2)
+                    pass.preset.set_from_config(readUInt("DlssNr", std::format("Pass{}Preset", i + 2).c_str()));
+                pass.style.set_from_config(readUInt("DlssNr", std::format("Pass{}Style", i + 2).c_str()));
+                pass.intensity.set_from_config(readFloat("DlssNr", std::format("Pass{}Intensity", i + 2).c_str()));
+                pass.structure.set_from_config(readFloat("DlssNr", std::format("Pass{}LocalStructure", i + 2).c_str()));
+                pass.tone.set_from_config(readFloat("DlssNr", std::format("Pass{}LocalTone", i + 2).c_str()));
+                pass.skin.set_from_config(readFloat("DlssNr", std::format("Pass{}SkinStructure", i + 2).c_str()));
+                pass.autoMask.set_from_config(readBool("DlssNr", std::format("Pass{}AutoMask", i + 2).c_str()));
             }
             DlssNrReversibleMode.set_from_config(readUInt("DlssNr", "ReversibleMode"));
             DlssNrApplyModel.set_from_config(readBool("DlssNr", "ApplyModel"));
@@ -587,6 +564,8 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // Don't enable again if set false because of Linux issue
             OverlayMenu.set_from_config(readBool("Menu", "OverlayMenu"));
+            ShortcutKeyRequireCtrl.set_from_config(readBool("Menu", "ShortcutKeyRequireCtrl"));
+            ShortcutKeyRequireAlt.set_from_config(readBool("Menu", "ShortcutKeyRequireAlt"));
             ShortcutKey.set_from_config(readInt("Menu", "ShortcutKey"));
             ExtendedLimits.set_from_config(readBool("Menu", "ExtendedLimits"));
             ShowFps.set_from_config(readBool("Menu", "ShowFps"));
@@ -989,7 +968,7 @@ std::string GetFloatValue(std::optional<float> value)
     return std::to_string(value.value());
 }
 
-bool Config::SaveIni()
+bool Config::SaveIni(std::filesystem::path destination)
 {
     // Upscalers
     {
@@ -1009,25 +988,12 @@ bool Config::SaveIni()
 
     // Frame Generation
     {
-        bool ampereUnlock = Instance()->FGDLSSGAmpereMfgUnlock.value_for_config_or(false);
-        bool adaUnlock = Instance()->FGDLSSGAdaMfgUnlock.value_for_config_or(false);
-        if (ampereUnlock && adaUnlock)
-            adaUnlock = false;
-
         ini.SetValue("FrameGen", "Enabled", GetBoolValue(Instance()->FGEnabled.value_for_config()).c_str());
-        ini.SetValue(
-            "FrameGen", "External",
-            GetBoolValue(Instance()->ExternalFrameGeneration.value_for_config_or(false) || ampereUnlock).c_str());
-        ini.SetValue("DLSSG", "AdaMfgUnlock", GetBoolValue(adaUnlock).c_str());
-        ini.SetValue("DLSSG", "AdaBlackwellKernels",
-                     GetBoolValue(Instance()->FGDLSSGAdaBlackwellKernels.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "AmpereMfgUnlock", GetBoolValue(ampereUnlock).c_str());
-        ini.SetValue("DLSSG", "AmpereMfgMaxFrames",
-                     GetIntValue(Instance()->FGDLSSGAmpereMfgMaxFrames.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "AmpereMfgKernelImage",
-                     Instance()->FGDLSSGAmpereMfgKernelImage.value_for_config_or("auto").c_str());
-        ini.SetValue("DLSSG", "AmpereMfgHardwareBilinear",
-                     GetBoolValue(Instance()->FGDLSSGAmpereMfgHardwareBilinear.value_for_config()).c_str());
+        // Discard settings from removed fork-only frame-generation extensions.
+        ini.Delete("FrameGen", "External");
+        for (const auto* key : { "AdaBlackwellKernels", "AmpereMfgUnlock", "AmpereMfgMaxFrames", "AmpereMfgKernelImage",
+                                 "AmpereMfgHardwareBilinear" })
+            ini.Delete("DLSSG", key);
         ini.SetValue("FrameGen", "DebugView", GetBoolValue(Instance()->FGDebugView.value_for_config()).c_str());
         std::string FGInputString = "auto";
         if (auto FGInputHeld = Instance()->FGInput.value_for_config(); FGInputHeld.has_value())
@@ -1159,6 +1125,16 @@ bool Config::SaveIni()
     }
 
     {
+#if defined(OPTISCALER_RTX40_MFG)
+        ini.SetValue("DLSSG", "AdaMfgUnlock", GetBoolValue(Instance()->FGDLSSGAdaMfgUnlock.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "AdaTemporalFix", Instance()->FGDLSSGAdaTemporalFix.value_for_config_or("auto").c_str());
+        ini.SetValue("DLSSG", "AdaFlipMeteringPatch",
+                     GetBoolValue(Instance()->FGDLSSGAdaFlipMeteringPatch.value_for_config()).c_str());
+#else
+        ini.Delete("DLSSG", "AdaMfgUnlock");
+        ini.Delete("DLSSG", "AdaTemporalFix");
+        ini.Delete("DLSSG", "AdaFlipMeteringPatch");
+#endif
         ini.SetValue("DLSSG", "InterpolationCount",
                      GetIntValue(Instance()->FGDLSSGInterpolationCount.value_for_config()).c_str());
         ini.SetValue("DLSSG", "UseGamesReflexMarkers",
@@ -1180,6 +1156,8 @@ bool Config::SaveIni()
         ini.SetValue("OptiFG", "HUDFixExtended", GetBoolValue(Instance()->FGHUDFixExtended.value_for_config()).c_str());
         ini.SetValue("OptiFG", "HUDFixImmediate",
                      GetBoolValue(Instance()->FGImmediateCapture.value_for_config()).c_str());
+        ini.SetValue("OptiFG", "HUDFixPersistentBindings",
+                     GetBoolValue(Instance()->FGHudfixPersistentBindings.value_for_config()).c_str());
         ini.SetValue("OptiFG", "UseShards", GetBoolValue(Instance()->FGUseShards.value_for_config()).c_str());
         ini.SetValue("OptiFG", "AlwaysTrackHeaps",
                      GetBoolValue(Instance()->FGAlwaysTrackHeaps.value_for_config()).c_str());
@@ -1299,16 +1277,25 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "Enabled", GetBoolValue(Instance()->DlssNrEnabled.value_for_config()).c_str());
         ini.SetValue("DlssNr", "FinishedPicture",
                      GetBoolValue(Instance()->DlssNrFinishedPicture.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "HdrTransfer", GetBoolValue(Instance()->DlssNrHdrTransfer.value_for_config()).c_str());
         ini.SetValue("DlssNr", "RunBeforeSR", GetBoolValue(Instance()->DlssNrRunBeforeSr.value_for_config()).c_str());
         ini.SetValue("DlssNr", "DeferredDLSS", GetBoolValue(Instance()->DlssNrDeferredDlss.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "PrivateUpscaler",
+                     GetIntValue(Instance()->DlssNrPrivateUpscaler.value_for_config()).c_str());
         ini.SetValue("DlssNr", "ResidualAcrossRR",
                      GetBoolValue(Instance()->DlssNrResidualAcrossRr.value_for_config()).c_str());
         ini.SetValue("DlssNr", "ResidualAcrossRRBlend",
                      GetFloatValue(Instance()->DlssNrResidualAcrossRrBlend.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "ResidualFG", GetBoolValue(Instance()->DlssNrResidualFg.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Precision", GetIntValue(Instance()->DlssNrPrecision.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "ResidualFGApproxCamera",
-                     GetBoolValue(Instance()->DlssNrResidualFgApproxCamera.value_for_config()).c_str());
+        ini.Delete("DlssNr", "ResidualFG");
+        ini.Delete("DlssNr", "ResidualFGApproxCamera");
+        ini.Delete("DlssNr", "UseProxy");
+        ini.Delete("DlssNr", "ProxyProbe");
+        ini.Delete("DlssNr", "ProbeD3D11");
+        ini.Delete("DlssNr", "Precision"); // Remove the obsolete backend selector from saved configurations.
+        for (const char* key :
+             { "ScanExposure", "ScanMeter", "ScanTrim", "ScanAnchorValue", "ScanAnchorWhitePoint", "ScanAnchors",
+               "ScanInverted", "WhitePointFromExposure", "SkinToneEnabled", "AutoCapture" })
+            ini.Delete("DlssNr", key);
         {
             auto toggle = Instance()->DlssNrToggleKey.value_for_config();
             ini.SetValue("DlssNr", "ToggleKey", GetIntValue(toggle, toggle > 0).c_str());
@@ -1320,9 +1307,6 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "MaxRatio", GetFloatValue(Instance()->DlssNrMaxRatio.value_for_config()).c_str());
         ini.SetValue("DlssNr", "Transfer", GetIntValue(Instance()->DlssNrTransfer.value_for_config()).c_str());
 
-        ini.SetValue("DlssNr", "ProbeD3D11", GetBoolValue(Instance()->DlssNrProbeD3D11.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "WhitePointFromExposure",
-                     GetBoolValue(Instance()->DlssNrWhitePointFromExposure.value_for_config()).c_str());
         ini.SetValue("DlssNr", "DebugView", GetIntValue(Instance()->DlssNrDebugView.value_for_config()).c_str());
         ini.SetValue("DlssNr", "Compare", GetIntValue(Instance()->DlssNrCompare.value_for_config()).c_str());
         ini.SetValue("DlssNr", "CompareSplit",
@@ -1333,38 +1317,52 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "TagScale", GetFloatValue(Instance()->DlssNrTagScale.value_for_config()).c_str());
         ini.SetValue("DlssNr", "WorkingScale",
                      GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialCompression",
+                     GetBoolValue(Instance()->DlssNrSpatialCompression.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialCenterX",
+                     GetFloatValue(Instance()->DlssNrSpatialCenterX.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialCenterY",
+                     GetFloatValue(Instance()->DlssNrSpatialCenterY.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialWorkX",
+                     GetFloatValue(Instance()->DlssNrSpatialWorkX.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialWorkY",
+                     GetFloatValue(Instance()->DlssNrSpatialWorkY.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialOffsetX",
+                     GetFloatValue(Instance()->DlssNrSpatialOffsetX.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialOffsetY",
+                     GetFloatValue(Instance()->DlssNrSpatialOffsetY.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialShiftX",
+                     GetFloatValue(Instance()->DlssNrSpatialShiftX.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialShiftY",
+                     GetFloatValue(Instance()->DlssNrSpatialShiftY.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialShowCenter",
+                     GetBoolValue(Instance()->DlssNrSpatialShowCenter.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "SpatialShowWork",
+                     GetBoolValue(Instance()->DlssNrSpatialShowWork.value_for_config()).c_str());
         ini.SetValue("DlssNr", "ScalingDownscaler", GetIntValue(Instance()->DlssNrScalingDownscaler).c_str());
-        ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
 
-        // These were read every launch but never written, so nothing set through the menu survived a
-        // restart -- the white-point source, both trims, the anchor, the pass count and the rest all
-        // reset to default on the next run.
+        ini.SetValue("DlssNr", "Passes", GetIntValue(Instance()->DlssNrPasses.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "ReplaceDetailStrength",
+                     GetFloatValue(Instance()->DlssNrReplaceDetailStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "ResidualConfidenceSensitivity",
+                     GetFloatValue(Instance()->DlssNrResidualConfidenceSensitivity.value_for_config()).c_str());
         ini.SetValue("DlssNr", "WhitePointSource",
                      GetIntValue(Instance()->DlssNrWhitePointSource.value_for_config()).c_str());
         ini.SetValue("DlssNr", "WhitePointTrim",
                      GetFloatValue(Instance()->DlssNrWhitePointTrim.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "ScanTrim", GetFloatValue(Instance()->DlssNrScanTrim.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "ScanAnchorValue",
-                     GetFloatValue(Instance()->DlssNrScanAnchorValue.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "ScanAnchorWhitePoint",
-                     GetFloatValue(Instance()->DlssNrScanAnchorWhitePoint.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "ScanAnchors", Instance()->DlssNrScanAnchors.value_for_config_or("").c_str());
-        ini.SetValue("DlssNr", "ScanInverted", GetBoolValue(Instance()->DlssNrScanInverted.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "ScanMeter", GetBoolValue(Instance()->DlssNrScanMeter.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Passes", GetIntValue(Instance()->DlssNrPasses.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "UseProxy", GetBoolValue(Instance()->DlssNrUseProxy.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "ProxyProbe", GetBoolValue(Instance()->DlssNrProxyProbe.value_for_config()).c_str());
-        // ScanExposure is a developer override with no menu control; persist it so a set ini keeps it.
-        ini.SetValue("DlssNr", "ScanExposure", GetBoolValue(Instance()->DlssNrScanExposure.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AutoExposureTrim",
+                     GetFloatValue(Instance()->DlssNrAutoExposureTrim.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AutoExposureHighlightProtection",
+                     GetFloatValue(Instance()->DlssNrAutoExposureHighlightProtection.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "ExposureTrimAnchors",
+                     Instance()->DlssNrExposureTrimAnchors.value_for_config().value_or("auto").c_str());
+        ini.SetValue("DlssNr", "AutoExposureTrimAnchors",
+                     Instance()->DlssNrAutoExposureTrimAnchors.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "WhitePointScale",
                      GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());
         ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());
         ini.SetValue("DlssNr", "Intensity", GetFloatValue(Instance()->DlssNrIntensity.value_for_config()).c_str());
         ini.SetValue("DlssNr", "Style", GetIntValue(Instance()->DlssNrStyle.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass2Preset", GetIntValue(Instance()->DlssNrPass2Preset.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass2Style", GetIntValue(Instance()->DlssNrPass2Style.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass3Preset", GetIntValue(Instance()->DlssNrPass3Preset.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass3Style", GetIntValue(Instance()->DlssNrPass3Style.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LocalStructure",
                      GetFloatValue(Instance()->DlssNrLocalStructure.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LocalTone", GetFloatValue(Instance()->DlssNrLocalTone.value_for_config()).c_str());
@@ -1373,8 +1371,6 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AutoMask", GetBoolValue(Instance()->DlssNrAutoMask.value_for_config()).c_str());
         ini.SetValue("DlssNr", "SkinProtection",
                      GetBoolValue(Instance()->DlssNrSkinProtection.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "SkinToneEnabled",
-                     GetBoolValue(Instance()->DlssNrSkinToneEnabled.value_for_config()).c_str());
         ini.SetValue("DlssNr", "SkinDetail", GetFloatValue(Instance()->DlssNrSkinDetail.value_for_config()).c_str());
         ini.SetValue("DlssNr", "SkinColour", GetFloatValue(Instance()->DlssNrSkinColour.value_for_config()).c_str());
         ini.SetValue("DlssNr", "EnvironmentDetail",
@@ -1382,41 +1378,24 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "EnvironmentColour",
                      GetFloatValue(Instance()->DlssNrEnvironmentColour.value_for_config()).c_str());
         ini.SetValue("DlssNr", "ShowSkinMask", GetBoolValue(Instance()->DlssNrShowSkinMask.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass2Intensity",
-                     GetFloatValue(Instance()->DlssNrPass2Intensity.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass2LocalStructure",
-                     GetFloatValue(Instance()->DlssNrPass2LocalStructure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass2LocalTone",
-                     GetFloatValue(Instance()->DlssNrPass2LocalTone.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass2SkinStructure",
-                     GetFloatValue(Instance()->DlssNrPass2SkinStructure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass2AutoMask",
-                     GetBoolValue(Instance()->DlssNrPass2AutoMask.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass3Intensity",
-                     GetFloatValue(Instance()->DlssNrPass3Intensity.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass3LocalStructure",
-                     GetFloatValue(Instance()->DlssNrPass3LocalStructure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass3LocalTone",
-                     GetFloatValue(Instance()->DlssNrPass3LocalTone.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass3SkinStructure",
-                     GetFloatValue(Instance()->DlssNrPass3SkinStructure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "Pass3AutoMask",
-                     GetBoolValue(Instance()->DlssNrPass3AutoMask.value_for_config()).c_str());
         ini.SetValue("DlssNr", "UnlockPasses", GetBoolValue(Instance()->DlssNrUnlockPasses.value_for_config()).c_str());
-        for (unsigned int i = 0; i < 27; ++i)
+        for (unsigned int i = 0; i < std::size(Instance()->DlssNrPassOverrides); ++i)
         {
-            auto& pass = Instance()->DlssNrExtraPasses[i];
-            ini.SetValue("DlssNr", std::format("Pass{}Style", i + 4).c_str(),
+            auto& pass = Instance()->DlssNrPassOverrides[i];
+            if (i < 2)
+                ini.SetValue("DlssNr", std::format("Pass{}Preset", i + 2).c_str(),
+                             GetIntValue(pass.preset.value_for_config()).c_str());
+            ini.SetValue("DlssNr", std::format("Pass{}Style", i + 2).c_str(),
                          GetIntValue(pass.style.value_for_config()).c_str());
-            ini.SetValue("DlssNr", std::format("Pass{}Intensity", i + 4).c_str(),
+            ini.SetValue("DlssNr", std::format("Pass{}Intensity", i + 2).c_str(),
                          GetFloatValue(pass.intensity.value_for_config()).c_str());
-            ini.SetValue("DlssNr", std::format("Pass{}LocalStructure", i + 4).c_str(),
+            ini.SetValue("DlssNr", std::format("Pass{}LocalStructure", i + 2).c_str(),
                          GetFloatValue(pass.structure.value_for_config()).c_str());
-            ini.SetValue("DlssNr", std::format("Pass{}LocalTone", i + 4).c_str(),
+            ini.SetValue("DlssNr", std::format("Pass{}LocalTone", i + 2).c_str(),
                          GetFloatValue(pass.tone.value_for_config()).c_str());
-            ini.SetValue("DlssNr", std::format("Pass{}SkinStructure", i + 4).c_str(),
+            ini.SetValue("DlssNr", std::format("Pass{}SkinStructure", i + 2).c_str(),
                          GetFloatValue(pass.skin.value_for_config()).c_str());
-            ini.SetValue("DlssNr", std::format("Pass{}AutoMask", i + 4).c_str(),
+            ini.SetValue("DlssNr", std::format("Pass{}AutoMask", i + 2).c_str(),
                          GetBoolValue(pass.autoMask.value_for_config()).c_str());
         }
         ini.SetValue("DlssNr", "ReversibleMode",
@@ -1863,17 +1842,23 @@ bool Config::SaveIni()
                      wstring_to_string(Instance()->XeSSDx11Library.value_for_config_or(L"auto")).c_str());
     }
 
+    ini.SetValue("Menu", "ShortcutKeyRequireCtrl",
+                 GetBoolValue(Instance()->ShortcutKeyRequireCtrl.value_for_config()).c_str());
+
+    ini.SetValue("Menu", "ShortcutKeyRequireAlt",
+                 GetBoolValue(Instance()->ShortcutKeyRequireAlt.value_for_config()).c_str());
+
     // Old configs, just delete them
     {
         ini.Delete("FSR", "Fsr4ForceEnableInt8");
         ini.Delete("Nukems", "MakeDepthCopy", true);
     }
 
-    auto pathWStr = absoluteFileName.wstring();
+    const auto pathWStr = (destination.empty() ? absoluteFileName : destination).wstring();
 
     LOG_INFO("Trying to save ini to: {0}", wstring_to_string(pathWStr));
 
-    return ini.SaveFile(absoluteFileName.wstring().c_str()) >= 0;
+    return ini.SaveFile(pathWStr.c_str()) >= 0;
 }
 
 bool Config::SaveXeFG()
@@ -2112,4 +2097,46 @@ Config* Config::Instance()
         _config = new Config();
 
     return _config;
+}
+
+namespace
+{
+std::filesystem::path ProfilePath(const std::wstring& name)
+{
+    if (name.empty() || name.size() > 100 || name.back() == L'.' || name.back() == L' ' ||
+        name.find_first_of(L"<>:\"/\\|?*") != std::wstring::npos ||
+        std::any_of(name.begin(), name.end(), [](wchar_t c) { return c < 32; }))
+        return {};
+    return Util::DllPath().parent_path() / "OptiScalerProfiles" / (name + L".profile");
+}
+} // namespace
+bool Config::SaveProfile(const std::wstring& name)
+{
+    const auto path = ProfilePath(name);
+    if (path.empty())
+        return false;
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    return !error && SaveIni(path);
+}
+bool Config::LoadProfile(const std::wstring& name)
+{
+    const auto path = ProfilePath(name);
+    if (path.empty())
+        return false;
+    const bool detected = State::Instance().nvngxIniDetected;
+    const bool loaded = Reload(path);
+    State::Instance().nvngxIniDetected = detected;
+    return loaded;
+}
+std::vector<std::string> Config::ListProfiles()
+{
+    std::vector<std::string> names;
+    std::error_code error;
+    const auto folder = Util::DllPath().parent_path() / "OptiScalerProfiles";
+    for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error))
+        if (it->is_regular_file(error) && it->path().extension() == L".profile")
+            names.push_back(wstring_to_string(it->path().stem().wstring()));
+    std::sort(names.begin(), names.end());
+    return names;
 }

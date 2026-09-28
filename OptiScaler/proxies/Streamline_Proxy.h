@@ -362,6 +362,7 @@ class StreamlineProxy
         auto nvngxDlssPath = Util::FindFilePath(exePath, "nvngx_dlss.dll");
         auto nvngxDlssDPath = Util::FindFilePath(exePath, "nvngx_dlssd.dll");
         auto nvngxDlssGPath = Util::FindFilePath(exePath, "nvngx_dlssg.dll");
+        auto nvngxDlssNrPath = Util::FindFilePath(exePath, "nvngx_dlssnr.dll");
 
         std::vector<std::wstring> pathStorage;
 
@@ -380,6 +381,11 @@ class StreamlineProxy
 
         if (Config::Instance()->DLSSFeaturePath.has_value())
             pathStorage.push_back(Config::Instance()->DLSSFeaturePath.value());
+
+        // Streamline can initialize NGX before the upscaler does. Include the NR
+        // runtime now: later NGX initialization cannot repair the first search list.
+        if (nvngxDlssNrPath.has_value())
+            pathStorage.push_back(nvngxDlssNrPath.value().parent_path().wstring());
 
         // Streamline makes a copy of those
         std::vector<const wchar_t*> paths;
@@ -404,6 +410,27 @@ class StreamlineProxy
 
         _isD3D12Requested = true;
         auto initResult = StreamlineProxy::Init()(pref, sl::kSDKVersion);
+
+        sl::AdapterInfo adapterInfo {};
+        if (StreamlineProxy::IsFeatureSupported()(sl::kFeatureDLSS_G, adapterInfo) != sl::Result::eOk)
+        {
+            if (State::Instance().activeFgNvngx == FGNvngxReplacement::None)
+            {
+                Config::Instance()->FGNvngxReplacement = FGNvngxReplacement::Nukems;
+                Config::Instance()->SaveIni();
+
+                MessageBoxW(NULL,
+                            L"You've tried to use real DLSSG, but it's not supported\n"
+                            "Opti will try to use a replacement, restart the game",
+                            L"No DLSSG Support", MB_ICONWARNING | MB_OK);
+
+                std::exit(1);
+            }
+            else
+            {
+                LOG_ERROR("FG Nvngx replacement was selected but SL failed to init DLSSG");
+            }
+        }
 
         State::EnableChecks(owner);
 

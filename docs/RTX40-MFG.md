@@ -1,64 +1,60 @@
-# RTX 40 MFG unlocker (optional)
+# v0.8.0 with RTX 40 MFG
 
-This fork can leave frame generation to [Dashdogy's RTX40MFG-Unlock](https://github.com/dashdogy/RTX40MFG-Unlock).
-The unlocker is separate, MIT-licensed work by Michael Robles. Its source is pinned as a git submodule
-at `4e776d068f91b4a665425542bb005dd57cc3d891`. No NVIDIA FG binary is bundled or patched on disk by us.
-This integration has been built, but has not been verified on RTX 40 hardware. It is not an RTX 30
-FG unlocker and does not add native DLSS FG to games which lack it.
+This branch retains the built-in Ada unlock as an optional build feature. Both builds include the Starfield tracking fix. The unlock is compiled into OptiScaler: no extra helper, ASI loader or external-FG mode is needed.
 
-## Use with OptiScaler
+## Build
 
-1. Back up your working setup. Close the game.
-2. Install the unlocker using its own README. Keep its loader separate from OptiScaler and ReShade.
-   Do not overwrite an existing `dxgi.dll`, `version.dll`, `dinput8.dll`, or other proxy owned by a mod.
-   The ASI must load before the first FG pipeline; use the upstream-recommended early ASI loader.
-   Do not rely on OptiScaler's late ASI-plugin loading for this.
-3. In `OptiScaler.ini`, set `[FrameGen] External=true`. Or select **External frame generation / MFG
-   unlocker** in the overlay, Save Settings, then restart.
-4. Enable native DLSS FG in the game. Select the multiplier in the unlocker/game, not OptiScaler.
-5. Start at 2x, then try 3x. Confirm the active provider and applied multiplier in the unlocker log,
-   not just the requested setting or an FPS counter.
-
-External mode disables OptiScaler's Streamline interception, NVIDIA API overrides (including Reflex,
-flip metering and driver-preset interception), multiplier overrides and replacement FG routing.
-Streamline/FG DLL loads also pass through to the original loader. NR and NGX upscaling remain available.
-It is a startup option: switching ownership without restarting is unsafe. Your saved OptiScaler FG
-settings are retained and return on a later startup with `External=false`.
-Use the game's/driver's FPS limiter in this mode; OptiScaler does not own Reflex pacing.
-Do not use this mode when you need OptiScaler to replace DLSSG with FSR FG on an RTX 30 card.
-
-Keep the game's working Streamline and NVIDIA runtime DLLs. Do not copy a second Streamline stack
-from another game's NR/FG package. Disable competing NR injectors when testing this fork.
-
-For a frozen image above 2x, upstream documents FG Preset B as a reported workaround in some games;
-Cyberpunk recovery was not separately confirmed. See the upstream README for current limitations.
-No security exclusions or disabled antivirus are required. Use single-player games without anti-cheat.
-
-## Build the optional unlocker
-
-Install VS 2022 C++ Build Tools and CMake 3.24+. From this repository:
+The default build excludes the unlock implementation, hooks, capability overrides, menu and configuration field. Ordinary DLSS FG/MFG remains available. Legacy `AdaMfgUnlock` settings are ignored and removed on save.
 
 ```powershell
-git submodule update --init external/RTX40MFG-Unlock
-.\build_mfg_unlocker.ps1
+# Without the unlock (default)
+MSBuild OptiScaler.sln /p:Configuration=Release /p:Platform=x64 /p:OptiScalerRtx40Mfg=false
+./package_release.ps1 -Version nr-standard
+
+# Compile the optional unlock
+MSBuild OptiScaler.sln /p:Configuration=Release /p:Platform=x64 /p:OptiScalerRtx40Mfg=true
+./package_release.ps1 -Version nr-rtx40-mfg -EnableRtx40Mfg
 ```
 
-If CMake isn't on PATH, pass `-CMake 'C:\path\to\cmake.exe'`.
-This builds the core DLL and ASI into a separate `release/mfg-optional-*` folder. It does not install
-anything into a game or include the unlocker in normal OptiScaler releases.
-The core defaults to following the game. To build the optional ReShade control panel too, provide
-`-ReShadeRoot` and `-ImGuiRoot` pointing to matching source trees as described by upstream.
-Without the panel, use the game's multiplier or the upstream JSON configuration mechanism.
-For example, with the game closed, merge these keys into `RTX40MFG-Universal.json` beside the real
-game executable (preserve any other keys):
+Enabled builds use `x64/Release-RTX40-MFG`; standard builds use `x64/Release`. Separate intermediate folders prevent mixing objects/PCH files. Packaging checks the DLL flavour even with `-SkipBuild` and omits the unlock INI default for standard packages.
 
-```json
-{"followGame": false, "mode": "fixed", "multiplier": 3, "dynamicTargetFrameRate": 0, "dynamicExperimental56": false}
-```
+`OptiScalerRtx40Mfg=true` defines `OPTISCALER_RTX40_MFG`. The runtime toggle still defaults off. Keeping the restoration/build-flag commits separate lets upstream reviews omit their source changes too: a disabled build flag alone does not remove them from a PR diff.
 
-If the legacy CET `plugins/cyber_engine_tweaks/mods/RTX40MFG/init.lua` exists, the universal JSON
-lives in that mod's folder instead. `RTX40_MFG_CONFIG_PATH`, if set, overrides both locations.
-The unlocker may limit the request to a supported multiplier; inspect its log.
+## Enable at runtime
 
-For a report, include the GPU, driver, game and unlocker versions, loader filenames, `OptiScaler.ini`,
-`OptiScaler.log` and `%TEMP%\MfgUnlock-<PID>.log`. Remove personal paths before posting publicly.
+1. Install the complete **unlock-enabled** package, preserving your INI and separately supplied NR runtime.
+2. Under frame-generation settings, enable **RTX 40 MFG unlock (restart)**, save and restart the game. Alternatively set `[DLSSG] AdaMfgUnlock=true` before launch.
+3. Enable the game's DLSS FG or configure OptiScaler's normal DLSSG output. Start at 3x and check motion as well as the FPS counter.
+
+The option defaults off and only patches RTX 40/Ada. It requires a supported NVIDIA DLSSG runtime; game multiplier overrides need Streamline 2.7.1+. Keep the game's working runtime. This package does not include NVIDIA FG/NR DLLs or another MFG unlocker.
+
+The patch retargets compatible Blackwell interpolation kernels for Ada and changes two frame-count gates in memory. It exposes up to five generated frames (6x including the real frame) only when both gates and a kernel group match. Unknown/ambiguous signatures remain unchanged. Disabling also requires a restart; it does not undo a live patch.
+
+RTX 20/30 unlocks, external-FG ownership, residual frame interpolation and NVFP4 remain absent. This does not add a missing FG integration to a game. Dynamic MFG and real RTX 40 motion quality remain unverified here; the available test GPU is RTX 5090.
+
+## Validation and source
+
+`tests/mfg_unlock/run.ps1` compiles the production patcher/scanner against controlled PE images. Cases cover both gate layouts, kernel retargeting, repeat calls, unsupported GPUs, missing/ambiguous gates, malformed kernels and restart semantics. `-Runtime <nvngx_dlssg.dll>` additionally patches an image mapped without DLL initialization, under simulated Ada identity; it checks that the disk file is unchanged. Neither test proves real RTX 40 interpolation works.
+
+The branch changes are the patcher, DLSSG/Streamline/load hooks, the toggle and INI handling, project registrations, tests and package documentation. The [NR upstream inventory](NR-UPSTREAM-DIFF-INVENTORY.md) describes the v0.8.0 base.
+
+Adapted from [y4my4my4m's work](https://github.com/y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG/commit/7b7220bb) and the earlier fork's Ada kernel retargeting, under GPL-3.0. This is the built-in implementation, not Dashdogy's separate unlocker.
+
+## Unlock options
+
+Everything below is applied at load, so Save Settings and restart after changing it. It exists only in the unlock-enabled build (`OptiScalerRtx40Mfg=true`). The options sit under **RTX 40 (Ada) MFG Unlock Options** in the overlay, which is drawn under the unlock checkbox on an RTX 40 while the unlock is on. The overlay reports the result directly under each control.
+
+The unlock patches the DLSS-G module and the Streamline plugin in memory only, and no file on disk is changed.
+
+- **Provider discovery.** The DLSS-G module is found by the game's `nvngx_dlssg.dll`, by the driver's OTA store (`models\dlssg\...\<hash>.bin`), and, for a renamed snippet, by a rate-limited walk of the loaded modules. Finding a module never patches it: the signatures decide.
+- **Plugin frame ceiling.** Streamline's `sl.dlss_g` lowers its compiled maximum to a device value its wrapper cached. A wrapper that cached 1 then rejects 3X and 4X with `sl::Result` 38. Once the snippet unlock has landed, the one-byte clamp is neutralised. The compiled maximum stays as a hard bound. The source fork applies this only together with its flip-metering option; here it applies whenever the unlock has landed.
+- **Frame timing fix** (`AdaTemporalFix = auto | retarget | ptx`). Above 2X every generated frame can land at the midpoint between two real frames. `auto` and `retarget` reuse the Blackwell interpolation kernel the module carries. `ptx` rewrites the Ada kernel's PTX so each frame is blended at its own time, and only works on the DLSS-G builds it has an exact profile for.
+- **Software frame pacing** (`AdaFlipMeteringPatch`, default false). Only for a freeze at 3X or more. It edits NVIDIA's plugin in memory, when it loads, so that it takes its own software-pacing fallback, and refuses unless the plugin's code is of the shape it recognises. Try `[NvApi] DisableFlipMetering=true` first, which is milder and ini-only.
+
+A line under **Override DLSSG Ratio** shows what the game asked for, what was sent, and what Streamline says it presented. That is the check to use: confirm the presented count follows the ratio, not just that an FPS counter rose.
+
+### What was checked, and what was not
+
+Real modules were mapped (never run) and searched: `nvngx_dlssg.dll` 310.9 and 310.8, and `sl.dlss_g.dll` 2.13.0.0. Both frame-count gates match exactly once in both snippet builds. The PTX rewrite finds and rebuilds its kernel in both (8 descriptors each). The plugin's frame-count clamp is found once, with a compiled maximum of 5. The flip-metering state is derived from the plugin: context +0x44F0, value 1, one register store to rewrite. `tests/mfg_real_module_check.cpp` reports the same for any build you give it, without modifying the file. Run it on a new DLSS-G build to see whether the patches still find their targets.
+
+**Not run in a game and not on RTX 40 hardware.** Nobody here has confirmed that intermediate frames advance, that the plugin ceiling patch removes the `sl::Result` 38 rejection, or that software pacing ends a freeze. Test moving scenes at 2X then 3X, read the presented count in the overlay, and report the GPU, driver, game, the DLSS-G version shown in the overlay status line, and `OptiScaler.log`.

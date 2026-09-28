@@ -9,6 +9,7 @@
 #include <nvapi/fakenvapi.h>
 #include <hooks/Reflex_Hooks.h>
 #include <hooks/D3D12_Hooks.h>
+#include <with_dx12/dx11_with_dx12_sync.h>
 
 #include <menu/menu_overlay_dx.h>
 
@@ -18,6 +19,8 @@
 #include <d3d12.h>
 #include <misc/IdentifyGpu.h>
 #include <hooks/Xell_Hooks.h>
+
+#include <magic_enum.hpp>
 
 #ifdef LOW_LATENCY_INPUTS
 #include <low_latency/input/input_antilag2.h>
@@ -52,6 +55,126 @@ const GUID IID_IUnwrappedDXGISwapChain = {
 static ID3D12Fence* resizeFence = nullptr;
 static UINT64 resizeFenceValue = 0;
 static HANDLE resizeFenceEvent = nullptr;
+
+static void UpdateOutputColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace)
+{
+    auto& state = State::Instance();
+
+    OutputColorSpace info {};
+    info.dxgiColorSpace = colorSpace;
+
+    switch (colorSpace)
+    {
+        // ------------------------------------------------------------
+        // SDR / Rec.709
+        // ------------------------------------------------------------
+
+    case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
+        info.transfer = ColorTransfer::SRGB;
+        info.primaries = ColorPrimaries::Rec709;
+        info.range = ColorRange::Full;
+        info.model = ColorModel::RGB;
+        info.valid = true;
+
+        break;
+
+    case DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P709:
+        info.transfer = ColorTransfer::SRGB;
+        info.primaries = ColorPrimaries::Rec709;
+        info.range = ColorRange::Studio;
+        info.model = ColorModel::RGB;
+        info.valid = true;
+
+        break;
+
+        // ------------------------------------------------------------
+        // scRGB / linear Rec.709
+        // ------------------------------------------------------------
+
+    case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
+        info.transfer = ColorTransfer::Linear;
+        info.primaries = ColorPrimaries::Rec709;
+        info.range = ColorRange::Full;
+        info.model = ColorModel::RGB;
+        info.valid = true;
+
+        break;
+
+        // ------------------------------------------------------------
+        // HDR10 / PQ / Rec.2020
+        // ------------------------------------------------------------
+
+    case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+        info.transfer = ColorTransfer::PQ;
+        info.primaries = ColorPrimaries::Rec2020;
+        info.range = ColorRange::Full;
+        info.model = ColorModel::RGB;
+        info.valid = true;
+
+        break;
+
+    case DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020:
+        info.transfer = ColorTransfer::PQ;
+        info.primaries = ColorPrimaries::Rec2020;
+        info.range = ColorRange::Studio;
+        info.model = ColorModel::RGB;
+        info.valid = true;
+
+        break;
+
+    case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020:
+    case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020:
+        info.transfer = ColorTransfer::PQ;
+        info.primaries = ColorPrimaries::Rec2020;
+        info.range = ColorRange::Studio;
+        info.model = ColorModel::YCbCr;
+        info.valid = true;
+
+        break;
+
+        // ------------------------------------------------------------
+        // HLG / Rec.2020
+        // ------------------------------------------------------------
+
+    case DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020:
+        info.transfer = ColorTransfer::HLG;
+        info.primaries = ColorPrimaries::Rec2020;
+        info.range = ColorRange::Full;
+        info.model = ColorModel::YCbCr;
+        info.valid = true;
+
+        break;
+
+    case DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020:
+        info.transfer = ColorTransfer::HLG;
+        info.primaries = ColorPrimaries::Rec2020;
+        info.range = ColorRange::Studio;
+        info.model = ColorModel::YCbCr;
+        info.valid = true;
+
+        break;
+
+        // ------------------------------------------------------------
+        // Unknown / unsupported
+        // ------------------------------------------------------------
+
+    default:
+        info.transfer = ColorTransfer::Unknown;
+        info.primaries = ColorPrimaries::Unknown;
+        info.range = ColorRange::Unknown;
+        info.model = ColorModel::Unknown;
+        info.valid = false;
+
+        break;
+    }
+
+    state.outputColorSpace = info;
+
+    LOG_INFO("Output color space updated: DXGI: {}, Transfer: {}, Primaries: {}, Range: {}, Model: {}, Valid: {}",
+             magic_enum::enum_name(info.dxgiColorSpace), magic_enum::enum_name(info.transfer),
+             magic_enum::enum_name(info.primaries), magic_enum::enum_name(info.range),
+             magic_enum::enum_name(info.model), info.valid);
+}
 
 static void WaitForGPUIdle(IUnknown* object)
 {
@@ -159,6 +282,14 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             return ((IDXGISwapChain1*) pSwapChain)->Present1(SyncInterval, Flags, pPresentParameters);
     }
 
+    // This lock will delay/prevent release of buffers while present is ongoing
+    std::shared_lock<std::shared_mutex> dx11wDx12PresentLock(Dx11wDx12Sync::PresentResizeMutex(), std::defer_lock);
+    if (State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
+        State::Instance().activeFgOutput == FGOutput::XeFG)
+    {
+        dx11wDx12PresentLock.lock();
+    }
+
     LOG_DEBUG("{}", _frameCounter);
 
     HRESULT presentResult;
@@ -251,26 +382,32 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         {
             std::optional<double> upscalerTimeOpt {};
 
-            if (cq != nullptr && currentFeature->Api() == API::DX12 && !currentFeature->IsWithDx12())
+            // If using DX11 with DX12 interop
+            if (State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12)
+            {
+                if (State::Instance().currentD3D11Device != nullptr &&
+                    (currentFeature->Api() == API::DX11 || currentFeature->IsWithDx12()))
+                {
+                    ID3D11DeviceContext* context = nullptr;
+                    State::Instance().currentD3D11Device->GetImmediateContext(&context);
+
+                    if (upscalerTimeOpt = currentFeature->ReadUpscalerTime(context); upscalerTimeOpt.has_value())
+                        currentFeature->ReadDetailedGpuTimes(context, State::Instance().detailedGpuTimes);
+
+                    context->Release();
+                }
+            }
+            // If DX12
+            else if (cq != nullptr && currentFeature->Api() == API::DX12 && !currentFeature->IsWithDx12())
             {
                 if (upscalerTimeOpt = currentFeature->ReadUpscalerTime(cq); upscalerTimeOpt.has_value())
                     currentFeature->ReadDetailedGpuTimes(cq, State::Instance().detailedGpuTimes);
             }
-            else if (device != nullptr)
+            // If DX11
+            else if (device != nullptr && (currentFeature->Api() == API::DX11 || currentFeature->IsWithDx12()))
             {
                 ID3D11DeviceContext* context = nullptr;
                 device->GetImmediateContext(&context);
-
-                if (upscalerTimeOpt = currentFeature->ReadUpscalerTime(context); upscalerTimeOpt.has_value())
-                    currentFeature->ReadDetailedGpuTimes(context, State::Instance().detailedGpuTimes);
-
-                context->Release();
-            }
-            if (State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
-                State::Instance().currentD3D11Device != nullptr)
-            {
-                ID3D11DeviceContext* context = nullptr;
-                State::Instance().currentD3D11Device->GetImmediateContext(&context);
 
                 if (upscalerTimeOpt = currentFeature->ReadUpscalerTime(context); upscalerTimeOpt.has_value())
                     currentFeature->ReadDetailedGpuTimes(context, State::Instance().detailedGpuTimes);
@@ -370,10 +507,23 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     {
         // Tick feature to let it know if it's frozen
         if (auto currentFeature = State::Instance().currentFeature; currentFeature != nullptr)
-            currentFeature->TickFrozenCheck();
+        {
+            if (auto currentFg = State::Instance().currentFG; currentFg != nullptr)
+                currentFeature->TickFrozenCheck(currentFg->GetInterpolatedFrameCount());
+            else
+                currentFeature->TickFrozenCheck();
+        }
 
-        if (cq && (fg == nullptr || !fg->IsActive() || fg->IsPaused()))
+        // XeFG's app-facing Present composes NR before the provider takes the frame,
+        // even with interpolation off. Its internal display buffer is not that frame.
+        const bool xeFgGamePicture = fg != nullptr && State::Instance().currentFGSwapchain != nullptr &&
+                                     State::Instance().activeFgOutput == FGOutput::XeFG &&
+                                     State::Instance().swapchainInteropApi == SwapchainInteropApi::None &&
+                                     fg->Hwnd() == hWnd;
+        if (cq && !xeFgGamePicture && (fg == nullptr || !fg->IsActive() || fg->IsPaused()))
             DlssNr::ApplyToFinishedPicture(pSwapChain, cq);
+        else if (isD3D11 && State::Instance().swapchainInteropApi == SwapchainInteropApi::None)
+            DlssNr::ApplyToFinishedPictureDx11(pSwapChain);
 
         // Draw overlay
         MenuOverlayDx::Present(pSwapChain, SyncInterval, Flags, pPresentParameters, pDevice, hWnd, isUWP);
@@ -457,7 +607,7 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
     _real->AddRef();
     auto refCount = _real->Release();
 
-    _device2 = _device;
+    CheckForHdrOutput();
 
     LOG_INFO("{} created, real: {:X}, refCount: {}", _id, (UINT64) real, refCount);
 }
@@ -974,6 +1124,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers(UINT BufferCount
         State::Instance().currentFG->Mutex.unlockThis(3);
     }
 
+    CheckForHdrOutput();
+
     return result;
 }
 
@@ -1130,51 +1282,57 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::CheckColorSpaceSupport(DXGI_CO
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
 {
-    State::Instance().isHdrActive = ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
-                                    ColorSpace == DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020 ||
-                                    ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020 ||
-                                    ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+    auto result = _real3->SetColorSpace1(ColorSpace);
 
-    // What one unit of the buffer means, which is the question the white point is really asking.
-    //
-    // Two of these encodings are absolute. PQ (ST.2084) puts 1.0 at 10,000 nits by definition, and
-    // scRGB -- linear, Rec.709 primaries -- puts 1.0 at 80 nits. In either the divisor this pass
-    // wants is arithmetic rather than a guess or a reading: paper white in nits over the unit. The
-    // rest are relative and say nothing about scale.
-    //
-    // Logged rather than used, for now. Whether a game that reports one of these actually honours it
-    // is the thing worth knowing before anything is built on it.
-    const char* meaning = "relative -- no scale to be had";
-    const char* name = "other";
-
-    switch (ColorSpace)
+    if (SUCCEEDED(result))
     {
-    case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
-        name = "PQ / ST.2084 (HDR10)";
-        meaning = "absolute: 1.0 = 10000 nits, so 203-nit paper white = 0.0203";
-        break;
-    case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
-        name = "scRGB (linear, Rec.709)";
-        meaning = "absolute: 1.0 = 80 nits, so 203-nit paper white = 2.5375";
-        break;
-    case DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020:
-        name = "HLG";
-        break;
-    case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020:
-        name = "Rec.2020, gamma 2.2";
-        break;
-    case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
-        name = "sRGB (SDR)";
-        break;
-    default:
-        break;
+        UpdateOutputColorSpace(ColorSpace);
+        DlssNr::FinishedPictureColorSpace(_real3, ColorSpace);
+
+        CheckForHdrOutput();
+
+        LOG_INFO("Output HDR Active: {}", State::Instance().hdrOutputActive);
+
+        // What one unit of the buffer means, which is the question the white point is really asking.
+        //
+        // Two of these encodings are absolute. PQ (ST.2084) puts 1.0 at 10,000 nits by definition, and
+        // scRGB -- linear, Rec.709 primaries -- puts 1.0 at 80 nits. In either the divisor this pass
+        // wants is arithmetic rather than a guess or a reading: paper white in nits over the unit. The
+        // rest are relative and say nothing about scale.
+        //
+        // Logged rather than used, for now. Whether a game that reports one of these actually honours it
+        // is the thing worth knowing before anything is built on it.
+        const char* meaning = "relative -- no scale to be had";
+        const char* name = "other";
+
+        switch (ColorSpace)
+        {
+        case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+            name = "PQ / ST.2084 (HDR10)";
+            meaning = "absolute: 1.0 = 10000 nits, so 203-nit paper white = 0.0203";
+            break;
+        case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
+            name = "scRGB (linear, Rec.709)";
+            meaning = "absolute: 1.0 = 80 nits, so 203-nit paper white = 2.5375";
+            break;
+        case DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020:
+            name = "HLG";
+            break;
+        case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020:
+            name = "Rec.2020, gamma 2.2";
+            break;
+        case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
+            name = "sRGB (SDR)";
+            break;
+        default:
+            break;
+        }
+
+        LOG_INFO("DLSS-NR: swapchain colour space {} -- {} ({})", (int) ColorSpace, name, meaning);
+
+        MenuOverlayDx::ApplyThemeStyle();
     }
 
-    LOG_INFO("DLSS-NR: swapchain colour space {} -- {} ({})", (int) ColorSpace, name, meaning);
-
-    const auto result = _real3->SetColorSpace1(ColorSpace);
-    if (SUCCEEDED(result))
-        DlssNr::FinishedPictureColorSpace(_real3, ColorSpace);
     return result;
 }
 
@@ -1431,6 +1589,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
         LOG_TRACE("Releasing ffxMutex: {}", State::Instance().currentFG->Mutex.getOwner());
         State::Instance().currentFG->Mutex.unlockThis(3);
     }
+
+    CheckForHdrOutput();
 
     return result;
 }

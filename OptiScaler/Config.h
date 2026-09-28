@@ -253,288 +253,113 @@ class Config
     CustomOptional<int32_t> NetworkModel { 0 };
     CustomOptional<bool> CreateHeaps { true };
 
-    // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) --- removable as one block -----------------
-    // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
-    // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
+    // DLSS Neural Rendering
+    // NR is opt-in. Placement defaults to the upscaler output.
     CustomOptional<bool> DlssNrEnabled { false };
-    // Run the NR pass on the upscaler's colour input, at render resolution, immediately before SR.
-    // Off preserves the v0.2.0 post-upscale placement.
     CustomOptional<bool> DlssNrRunBeforeSr { false };
     CustomOptional<bool> DlssNrFinishedPicture { false };
-    // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
-    // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
+    // Fit the scene-to-finished HDR response for early residuals.
+    CustomOptional<bool> DlssNrHdrTransfer { false };
+    // Generate before SR, privately upscale the edit, then compose after SR.
     CustomOptional<bool> DlssNrDeferredDlss { false };
-    // Experimental: with RunBeforeSR and the game's Ray Reconstruction both on, run NR before SR
-    // but leave the colour input untouched, then add the model's edit back onto the RR+SR output
-    // so it survives RR's denoise. v2 carries the edit as an MV-reprojected temporal accumulator
-    // (the per-frame ray-trace noise term averages to zero; the enhancement persists). Inert
-    // unless RunBeforeSR + RR are both active. Opt-in.
+    // Private carrier: 0 DLSS, 1 FSR 2.2, 2 FidelityFX runtime, 3 XeSS.
+    CustomOptional<int> DlssNrPrivateUpscaler { 0 };
+    // Legacy alias for the deferred path when RunBeforeSR is enabled.
     CustomOptional<bool> DlssNrResidualAcrossRr { false };
-    // v2 history blend rate for the accumulator above, 0.01..1. Lower = stabler but slower to
-    // appear; 1.0 = no accumulation (each frame's raw residual, which flickers). Default 0.08.
+    // RR history blend before private upscaling, clamped to 0.01..1.
     CustomOptional<float> DlssNrResidualAcrossRrBlend { 0.08f };
-    CustomOptional<bool> DlssNrResidualFg { false };
-    CustomOptional<uint32_t> DlssNrPrecision { 0 }; // 0 NVIDIA FP8 (default), 4 Experimental NVFP4 hybrid
-    CustomOptional<bool> DlssNrResidualFgApproxCamera { false };
-    // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
-    // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
     CustomOptional<uint32_t> DlssNrPreset { 0 };
     CustomOptional<float> DlssNrIntensity { 1.0f };
-    // 0 default (standard), 1 natural, 2 cinematic -- the model's own processing profiles.
+    // 0 Standard, 1 Natural, 2 Cinematic.
     CustomOptional<uint32_t> DlssNrStyle { 0 };
-    // Optional per-pass model profiles. Pass 1 uses Preset/Style above; an absent override inherits
-    // pass 1. Keeping inheritance explicit preserves every existing configuration and lets changing
-    // the base profile update the whole stack unless a later pass was deliberately specialised.
-    CustomOptional<uint32_t, NoDefault> DlssNrPass2Preset;
-    CustomOptional<uint32_t, NoDefault> DlssNrPass2Style;
-    CustomOptional<uint32_t, NoDefault> DlssNrPass3Preset;
-    CustomOptional<uint32_t, NoDefault> DlssNrPass3Style;
     CustomOptional<float> DlssNrLocalStructure { 1.0f };
     CustomOptional<float> DlssNrLocalTone { 1.0f };
-    // -1 means follow local structure, which is the model's own default. It is not a strength of zero.
+    // -1 follows the model's LocalStructure setting.
     CustomOptional<float> DlssNrSkinStructure { -1.0f };
     CustomOptional<bool> DlssNrAutoMask { true };
-    // Optional final-composition filter, not NVIDIA's semantic auto mask.
+    // Optional final-composition filter, independent of the model's semantic mask.
     CustomOptional<bool> DlssNrSkinProtection { false };
-    CustomOptional<bool> DlssNrSkinToneEnabled { true };
     CustomOptional<float> DlssNrSkinDetail { 1.0f };
     CustomOptional<float> DlssNrSkinColour { 1.0f };
     CustomOptional<float> DlssNrEnvironmentDetail { 1.0f };
     CustomOptional<float> DlssNrEnvironmentColour { 1.0f };
     CustomOptional<bool> DlssNrShowSkinMask { false };
-    CustomOptional<float, NoDefault> DlssNrPass2Intensity;
-    CustomOptional<float, NoDefault> DlssNrPass2LocalStructure;
-    CustomOptional<float, NoDefault> DlssNrPass2LocalTone;
-    CustomOptional<float, NoDefault> DlssNrPass2SkinStructure;
-    CustomOptional<bool, NoDefault> DlssNrPass2AutoMask;
-    CustomOptional<float, NoDefault> DlssNrPass3Intensity;
-    CustomOptional<float, NoDefault> DlssNrPass3LocalStructure;
-    CustomOptional<float, NoDefault> DlssNrPass3LocalTone;
-    CustomOptional<float, NoDefault> DlssNrPass3SkinStructure;
-    CustomOptional<bool, NoDefault> DlssNrPass3AutoMask;
     CustomOptional<bool> DlssNrUnlockPasses { false };
-    struct NrExtraPass
+    // Passes 2..30 inherit pass 1, except LocalTone defaults to zero.
+    struct NrPassOverrides
     {
-        CustomOptional<uint32_t, NoDefault> style;
+        CustomOptional<uint32_t, NoDefault> preset, style;
         CustomOptional<float, NoDefault> intensity, structure, tone, skin;
         CustomOptional<bool, NoDefault> autoMask;
     };
-    NrExtraPass DlssNrExtraPasses[27]; // pass 4..30; legacy pass 2/3 keys stay compatible
+    NrPassOverrides DlssNrPassOverrides[29]; // Existing Pass2..Pass30 INI keys remain unchanged.
 
-    // How much of the model's edit reaches the frame. Separated because detail synthesis is a luminance
-    // edit and any colour shift is usually the part you do not want, and allowed past 1.0 because
-    // exaggerating an edit is the only honest way to see whether there is one.
+    // Composition strengths are separate from model creation settings.
     CustomOptional<float> DlssNrTransferStrength { 1.0f };
     CustomOptional<float> DlssNrColourStrength { 1.0f };
 
-    // The RenoDX reversible proxy mode. 0 = today's soft-knee encode + our composition (default,
-    // byte-identical); 1 = unclipped Neutwo proxy + our composition; 2 = Neutwo proxy + pure-inverse
-    // replace. An in-game A/B and a way back. Default 0 = byte-identical to before.
+    // 0 soft knee; 1/2 Neutwo compose/replace; 3/4 hybrid compose/replace.
     CustomOptional<uint32_t> DlssNrReversibleMode { 0 };
 
-    // Whether the model's edit is applied. Off keeps the pass running (so Hold frame works) but shows
-    // the clean upscaler frame -- for A/B'ing NR on/off on a frozen frame. Default true.
+    // Hide the edit while leaving NR running for held-frame comparisons.
     CustomOptional<bool> DlssNrApplyModel { true };
 
-    // Frame hold: freeze the NR pass's input so a live setting change re-renders the SAME frame -- the
-    // only clean way to A/B our settings. A live testing toggle, not really a saved preference; off by
-    // default. See dlssnr/design/frame-hold.md.
+    // Freeze NR input for tuning. See dlssnr/design/frame-hold.md.
     CustomOptional<bool> DlssNrHoldFrame { false };
 
-    // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
-    // light source, whatever the model returns.
+    // Maximum pixel brightening/darkening ratio.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
 
-    // How a model that worked below the frame's size is brought back. 0 classic, 1 matched
-    // residual. Only has an effect when Model resolution is under 100%.
+    // Reduced output: 0 classic, 1/2 matched residual spatial/DLSS, 3/4 lighting + colour spatial/DLSS.
     CustomOptional<uint32_t> DlssNrTransfer { 1 };
 
-    // Measure the white point from the frame instead of taking it from the slider. On a frame the
-    // game already tone mapped there is nothing to measure and this has no effect.
-    //
-    // Off by default, because it is not finished. The pass writes its result back into the same buffer
-    // the meter reads, so with the pass running the meter is partly measuring its own output and the
-    // two chase each other: Enshrouded, one session, 1545 samples spanning 0.01 to 97.9 with 57 jumps
-    // beyond 1.5x in a single frame. Measured in the same spot seconds apart, 41.31 with the pass off
-    // against 0.46 with it on. That is visible as the picture pumping and occasionally flickering.
-    //
-    // The slider is the supported control until the loop is broken. This stays as an opt-in so the
-    // behaviour can still be looked at.
-
-    // Take the white point from the game's own exposure texture instead of measuring or guessing.
-    // Off by default until it has been seen to work in more than one game.
-    CustomOptional<bool> DlssNrWhitePointFromExposure { true };
-
-    // Ask the model, once, whether it will run on Direct3D 11 without the bridge.
-    //
-    // Off by default and deliberately so. Everything else this pass does reads memory it already owns;
-    // this one initialises an NVIDIA subsystem on the game's live D3D11 device, in a process where the
-    // D3D12 NGX instance is already running. It should return an error code and nothing more, but
-    // "should" is doing work in that sentence and it ships into games nobody can test first.
-    CustomOptional<bool> DlssNrProbeD3D11 { false };
-
-    // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
+    // 0 normal, 1 model input, 2 model answer, 3 amplified edit.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
 
-    // Showing the pass against itself, without having to toggle it and remember what the last frame
-    // looked like. 0 off, 1 side by side, 2 a wipe.
-    //
-    // Side by side squeezes the whole frame into each half, so it is a comparison rather than
-    // something to play in. The wipe cuts one frame and resamples nothing, so it is; the split is a
-    // stored setting and stays where it was put once the menu closes.
+    // 0 off, 1 side by side, 2 wipe.
     CustomOptional<uint32_t> DlssNrCompare { 0 };
     CustomOptional<float> DlssNrCompareSplit { 0.5f };
 
-    // Side by side only. 1 fits the whole frame at its right shape and accepts the bars; 2 fills
-    // the half and crops the sides off instead.
+    // Side by side: 1 fit, 2 fill/crop.
     CustomOptional<float> DlssNrCompareZoom { 1.0f };
 
-    // Which side the edited frame sits on, in both comparison modes.
     CustomOptional<bool> DlssNrCompareSwap { false };
 
-    // Labels drawn onto the two sides of a comparison, so a screenshot still says which is which.
-    // Drawn into the frame's own plane with a clip per side: in the wipe they are revealed and hidden
-    // by the split exactly as the images are, and there is nothing to drag.
     CustomOptional<bool> DlssNrCompareTags { false };
     CustomOptional<float> DlssNrTagScale { 1.5f };
 
-    // The fraction of the frame's resolution the model works at. The frame itself is never reduced --
-    // only the model's contribution is computed small and enlarged, so the picture underneath is
-    // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
+    // Model width/height scale; composition remains at the input size.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
 
-    // Filter used for NR supersampling (working scale > 1): the model runs above native, and this is
-    // the downscaler that averages its answer back to native. Independent of OutputScalingDownscaler
-    // so NR and Output Scaling can run different filters at once. Lanczos3 is the sharp default.
+    CustomOptional<bool> DlssNrSpatialCompression { false };
+    CustomOptional<float> DlssNrSpatialCenterX { 80.0f };
+    CustomOptional<float> DlssNrSpatialCenterY { 80.0f };
+    CustomOptional<float> DlssNrSpatialWorkX { 90.0f };
+    CustomOptional<float> DlssNrSpatialWorkY { 90.0f };
+    CustomOptional<float> DlssNrSpatialOffsetX { 0.0f };
+    CustomOptional<float> DlssNrSpatialOffsetY { 0.0f };
+    CustomOptional<float> DlssNrSpatialShiftX { 0.0f };
+    CustomOptional<float> DlssNrSpatialShiftY { 0.0f };
+    CustomOptional<bool> DlssNrSpatialShowCenter { false };
+    CustomOptional<bool> DlssNrSpatialShowWork { false };
+
+    // Independent downsampling filter for NR model scales above 100%.
     CustomOptional<Scaler> DlssNrScalingDownscaler { Scaler::Lanczos3 };
 
-    // Ask the driver's own nvngx.dll whether it will dispatch Neural Rendering, once per session.
-    //
-    // Everything here drives the model's DLL directly through a forwarder, because the model refuses
-    // callers whose module path does not contain "nvngx.dll". But the model ships inside the driver
-    // store, and NVIDIA does not ship a feature DLL that no dispatcher can reach -- so the driver's
-    // nvngx.dll may well know feature 18 already. If it does, the forwarder is unnecessary, the
-    // signature question disappears, and users stop needing a 165 MB copy in every game folder.
-    //
-    // Off by default: it is a diagnostic, not a feature.
-    CustomOptional<bool> DlssNrProxyProbe { false };
-
-    // Run Neural Rendering through the driver's own nvngx.dll rather than through the forwarder.
-    //
-    // This is how DLSS itself is called. The forwarder exists only because driving the model
-    // directly trips its caller check, and a probe showed the driver dispatches feature 18 already:
-    // asking for 18 answers differently from asking for a feature that does not exist. OptiScaler
-    // also already tells the driver where to look, since NVNGX_FeatureInfo_Paths carries the game
-    // and OptiScaler folders into Init_Ext.
-    //
-    // Off until it is shown to produce the same picture. If it does, the forwarder can go.
-    CustomOptional<bool> DlssNrUseProxy { false };
-
-    // Look for the exposure the game computed but never handed to the upscaler.
-    //
-    // Off by default, and it has to be. Reading a resource the game owns means assuming what state
-    // it is in, and unlike depth and motion vectors -- where NGX documents the contract -- a buffer
-    // found by its shape comes with no promise at all. UNORDERED_ACCESS is the reasonable
-    // assumption, since every candidate got here by having a UAV made on it, but it is an
-    // assumption, and nobody who has not asked for the scan should be carrying that risk.
-    //
-    // It decides nothing either way. It watches and it reports, because the last two times a number
-    // was inferred here it went straight into the interface and was wrong.
-    CustomOptional<bool> DlssNrScanExposure { false };
-
-    // Anchoring the scan: the white point that looked right, and the scan's value at that moment.
-    //
-    // The absolute white point cannot be derived from a buffer whose units are unknown. What CAN be
-    // derived is every value after the first: if the scan's number halves, the scene got twice as
-    // bright, and the white point follows -- whatever the number actually means, because only the
-    // ratio is used and the units cancel.
-    //
-    // So the user sets it once, in one lighting condition, and presses a button. After that it stays
-    // correct through every cave and every noon without being touched again. Which is also the shape
-    // that makes per-game profiles work: one person anchors a game, everybody else gets the number.
-    //
-    // Zero means not anchored, and then nothing happens at all.
-    // A lamp in the corner showing what the scan currently thinks the light is doing: red for dark,
-    // green for full light, and the shades between. Off by default; it is for watching the thing
-    // work, not for playing with.
-    // Where the white point comes from. One control, because there is one answer.
-    //
-    //   0  the paper white slider, and nothing else
-    //   1  the exposure the game hands the upscaler
-    //   2  a buffer the scan found, anchored to a white point the user chose once
-    //
-    // This replaces two independent checkboxes that could both be on. They were made exclusive by
-    // greying, which deadlocked -- each disabled the other, so once both were set the only way out
-    // was a button the notice never mentioned -- and then by clearing, which silently undid a
-    // setting the user had made. Both were attempts to stop an illegal state being REACHED. A single
-    // choice cannot reach it: there is nothing to keep consistent, because there is only one value.
-    CustomOptional<uint32_t> DlssNrWhitePointSource { 1 };
-
-    CustomOptional<bool> DlssNrScanMeter { false };
-
-    CustomOptional<float> DlssNrScanAnchorValue { 0.0f };      // legacy single anchor, migrated then unused
-    CustomOptional<float> DlssNrScanAnchorWhitePoint { 0.0f }; // legacy single anchor, migrated then unused
-
-    // The multi-point anchor table, serialised as "scan:white;scan:white;..." ascending. See
-    // dlssnr/design/multi-point-anchoring.md. Replaces the single pair above; a pre-existing single
-    // anchor is migrated into a one-row table on first load.
-    CustomOptional<std::string> DlssNrScanAnchors { std::string() };
-
-    // Whether the scan's number rises or falls with the light.
-    //
-    // A found buffer carries no contract. Most engines store an exposure -- a multiplier that goes
-    // DOWN as the scene gets brighter -- but some store its reciprocal, and nothing in the buffer
-    // says which. Rather than guess and be silently wrong in half the games, this is one click: if
-    // the picture moves the wrong way, flip it.
-    CustomOptional<bool> DlssNrScanInverted { false };
-
-    // The trim on an exposure-derived white point, kept apart from the manual divisor on purpose.
-    //
-    // These are two different quantities that happened to share one slider: the manual path wants an
-    // absolute divisor on an open-ended linear buffer, which in Nioh 3 is about 240, and the exposure
-    // path wants a multiplier on a number the game already supplied, where anything far from 1 is
-    // a sign the read is wrong rather than a preference. Sharing one stored value meant touching the
-    // slider in one mode silently destroyed the number found in the other.
-    //
-    // 1.0 is the identity: take the game's exposure exactly as given. That is the "safe value", and
-    // it is safe by construction rather than by being written down somewhere.
-    CustomOptional<float> DlssNrWhitePointTrim { 1.0f };
-
-    // The scan's trim, kept apart from the exposure texture's.
-    //
-    // They are trims on different things and a value found against one is meaningless against the
-    // other. Sharing one slider meant switching source silently carried a number across, so a
-    // picture that had been tuned came back wrong for a reason nothing on screen explained.
-    CustomOptional<float> DlssNrScanTrim { 1.0f };
-
-    // How many sequential model layers to run between one encode and one final composition. Each extra
-    // layer consumes the preceding model output and owns a persistent feature/history. The implementation
-    // deliberately caps this at three and never evaluates a feature on the command list that created it.
-    //
-    // 1 is what the model was trained for and what every published number describes. Above that it
-    // is being asked to enhance its own output, which is outside its training distribution: detail
-    // compounds, and so does anything it got wrong. Two often looks richer; three is the guarded
-    // ceiling because further layers converge while still paying the full cost.
-    //
-    // The cost is exactly linear -- the model is 98% of the frame's expense and every pass pays it
-    // again -- so 3 costs three times, near enough. There is no shortcut and no amortisation: the
-    // passes are sequential and each one needs the last one's output.
+    // Sequential layers with independent histories; up to 30 when unlocked.
     CustomOptional<uint32_t> DlssNrPasses { 1 };
 
-    // Which depth convention the model is told the guide uses.
-    //
-    //   0  what the game's own DLSS feature was created with, which is what it means for the upscaler
-    //   1  force normal
-    //   2  force inverted
-    //
-    // Writes one set of matched before/after frames per session, without anyone having to ask. The
-    // folder is cleared at the start of each run, so it holds one session's worth and never grows.
-    CustomOptional<bool> DlssNrAutoCapture { true };
-
-    // Multiplies the (auto or manual) white point before the encode: what the model considers "white".
-    // Higher means highlights sit lower on the curve and the model treats them as less extreme.
+    // Manual white-point divisor for the HDR-to-model encode.
     CustomOptional<float> DlssNrWhitePointScale { 1.0f };
+    CustomOptional<float> DlssNrReplaceDetailStrength { 0.0f };
+    CustomOptional<float> DlssNrResidualConfidenceSensitivity { 0.0f };
+    CustomOptional<uint32_t> DlssNrWhitePointSource { 0u };
+    CustomOptional<float> DlssNrWhitePointTrim { 1.0f };
+    CustomOptional<float> DlssNrAutoExposureTrim { 5.0f };
+    CustomOptional<float> DlssNrAutoExposureHighlightProtection { 0.0f };
+    CustomOptional<std::string> DlssNrExposureTrimAnchors { "" };
+    CustomOptional<std::string> DlssNrAutoExposureTrimAnchors { "" };
 
     // --- end DLSS 5 Neural Rendering -------------------------------------------------------------
 
@@ -614,6 +439,8 @@ class Config
     // Menu
     CustomOptional<float, NoDefault> MenuScale;
     CustomOptional<bool> OverlayMenu { true };
+    CustomOptional<bool> ShortcutKeyRequireCtrl { false };
+    CustomOptional<bool> ShortcutKeyRequireAlt { false };
     CustomOptional<int> ShortcutKey { VK_INSERT };
     CustomOptional<bool> ExtendedLimits { false };
     CustomOptional<bool> ShowFps { false };
@@ -797,16 +624,8 @@ class Config
 
     // Frame Generation
     CustomOptional<FGInput> FGInput { FGInput::NoFG };
-    CustomOptional<bool> ExternalFrameGeneration { false };
-    CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
-    CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels;
-    // Ampere/Turing (SM86/SM75) MFG unlocker — sideloads the dlssg_for_sm86 proxy
-    CustomOptional<bool> FGDLSSGAmpereMfgUnlock { false };
-    CustomOptional<int> FGDLSSGAmpereMfgMaxFrames { 3 };                // 0-3: 0=runtime default (3X), 1=2X, 2=3X, 3=4X
-    CustomOptional<std::string, NoDefault> FGDLSSGAmpereMfgKernelImage; // Auto / PTX / Cubin
-    CustomOptional<bool> FGDLSSGAmpereMfgHardwareBilinear { false };    // Optional approximate sampling (SM86 only)
     CustomOptional<FGOutput> FGOutput { FGOutput::NoFG };
-    CustomOptional<FGNvngxReplacement> FGNvngxReplacement { FGNvngxReplacement::None };
+    CustomOptional<FGNvngxReplacement> FGNvngxReplacement { FGNvngxReplacement::Nukems };
     CustomOptional<bool> FGDrawUIOverFG { false };
     CustomOptional<bool> FGUIPremultipliedAlpha { true };
     CustomOptional<bool> FGDisableHudless { false };
@@ -844,6 +663,7 @@ class Config
     CustomOptional<int> FGHUDLimit { 1 };
     CustomOptional<bool> FGHUDFixExtended { false };
     CustomOptional<bool> FGImmediateCapture { false };
+    CustomOptional<bool> FGHudfixPersistentBindings { true };
     CustomOptional<bool> FGDontUseSwapchainBuffers { false };
     CustomOptional<bool> FGRelaxedResolutionCheck { false };
     CustomOptional<bool> FGHudfixDisableRTV { false };
@@ -891,10 +711,9 @@ class Config
     CustomOptional<bool> FGXeFGIgnoreInitChecks { false };
     CustomOptional<int> FGXeFGInterpolationCount { 1 };
     CustomOptional<bool> FGXeFGUnlockEnabled { true };
-    // What the unlock patch writes as the provider's reported maximum, and what
-    // the MFG menu offers. Default 5 (6X) is the top of the tested range; the
-    // ini accepts 1..31, but above 6X is untested and the way back is to lower
-    // XeFG\MaxInterpolatedFrames.
+    // What the unlock patch reports as the provider's maximum, and what the MFG
+    // menu offers. Default 5 (6X) is the top of the tested range; the ini
+    // accepts 1..31, but above 6X is untested.
     CustomOptional<int> FGXeFGMaxInterpolatedFrames { 5 };
     CustomOptional<bool> FGXeFGExtraPacing { true };
     CustomOptional<bool> FGXeFGUIComposition { false };
@@ -905,6 +724,11 @@ class Config
     CustomOptional<bool> FGXeFGForceBorderless { false };
 
     // DLSSG
+#if defined(OPTISCALER_RTX40_MFG)
+    CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };           // RTX 40 only; restart required
+    CustomOptional<std::string, NoDefault> FGDLSSGAdaTemporalFix; // Auto / Retarget / Ptx
+    CustomOptional<bool> FGDLSSGAdaFlipMeteringPatch { false };   // pin sl.dlss_g to software frame pacing
+#endif
     CustomOptional<int> FGDLSSGInterpolationCount { 1 }; // For Opti's own SL instance
     CustomOptional<bool> FGDLSSGUseGamesReflexMarkers { true };
     CustomOptional<int, NoDefault>
@@ -961,7 +785,10 @@ class Config
     CustomOptional<bool, NoDefault> _DONTUSE_Fsr4ForceEnableInt8;
 
     bool LoadFromPath(const wchar_t* InPath);
-    bool SaveIni();
+    bool SaveIni(std::filesystem::path destination = {});
+    bool SaveProfile(const std::wstring& name);
+    bool LoadProfile(const std::wstring& name);
+    std::vector<std::string> ListProfiles();
     bool SaveXeFG();
 
     void CheckUpscalerFiles();

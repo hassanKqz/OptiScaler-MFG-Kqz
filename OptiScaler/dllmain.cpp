@@ -6,6 +6,7 @@
 #include "Logger.h"
 #include "resource.h"
 #include "DllNames.h"
+#include "BuildInfo.h"
 
 #include "proxies/Dxgi_Proxy.h"
 #include "proxies/Kernel32_Proxy.h"
@@ -26,7 +27,6 @@
 #include "inputs/FG/FSR3_Dx12_FG.h"
 
 #include <fsr4/FSR4ModelSelection.h>
-#include <framegen/dlssg/AmpereMfgLoader.h>
 
 #include <hooks/Dxgi_Hooks.h>
 #include <hooks/D3D11_Hooks.h>
@@ -1317,6 +1317,12 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
     if (quirks & GameQuirk::CreateSLOnThe2ndDevice)
         stringQuirks.push_back("Create SL on the 2nd device");
 
+    if (quirks & GameQuirk::Kcd2DlssgHdr10)
+        stringQuirks.push_back("KCD2 native HDR10 for DLSSG");
+
+    if (quirks & GameQuirk::Kcd2NrBeforeFg)
+        stringQuirks.push_back("KCD2 finished-picture NR before DLSSG");
+
     state->detectedQuirks.append_range(stringQuirks);
     for (auto& stringQuirk : stringQuirks)
         spdlog::info("Quirk: {}", stringQuirk);
@@ -1731,6 +1737,9 @@ void CheckMemoryForProxies()
 
 DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
 {
+    // TODO: dxvk deadlocks when the game and identify gpu calls create at the same time
+    // Sleep(1000);
+
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
 
     // We don't yet know if the GPU supports FSR 4 so hook any AMD
@@ -1754,10 +1763,6 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
     // If DX12 already loaded then grab the full GPU info right away
     if (hModuleVoid)
         IdentifyGpu::updateD3d12Capabilities();
-
-    // This existing worker runs after DLL_PROCESS_ATTACH has returned. GPU
-    // enumeration and loading another graphics proxy must not run in DllMain.
-    AmpereMfgLoader::TrySetup();
 
     return 0;
 }
@@ -1831,7 +1836,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         PrepareLogger();
 
-        spdlog::warn("{0} loaded", VER_PRODUCT_NAME);
+        spdlog::warn("{0} loaded", BuildInfo::ProductName());
         spdlog::warn("---------------------------------");
         spdlog::warn("OptiScaler is freely downloadable from");
         spdlog::warn("GitHub : https://github.com/optiscaler/OptiScaler/releases");
@@ -1864,29 +1869,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #endif
 
         // Initial state of FG
-        State::Instance().externalFrameGeneration = Config::Instance()->ExternalFrameGeneration.value_or_default() ||
-                                                    Config::Instance()->FGDLSSGAmpereMfgUnlock.value_or_default();
-        if (State::Instance().externalFrameGeneration)
-        {
-            // Only runtime overrides: preserve the user's OptiFG configuration for the next
-            // startup with External=false. Do not load a second FG provider or change Reflex.
-            auto* cfg = Config::Instance();
-            cfg->FGInput.set_volatile_value(FGInput::NoFG);
-            cfg->FGOutput.set_volatile_value(FGOutput::NoFG);
-            cfg->FGNvngxReplacement.set_volatile_value(FGNvngxReplacement::None);
-            cfg->FGEnabled.set_volatile_value(false);
-            cfg->ForceXeLL.set_volatile_value(false);
-            cfg->UseFakenvapi.set_volatile_value(false);
-            cfg->FN_ForceReflex.set_volatile_value(ForceReflex::InGame);
-            LOG_INFO("External frame generation: leaving Streamline/Reflex and MFG control to the game or unlocker; "
-                     "NR/SR remain available");
-        }
-
-        // Init Kernel proxies
-        NtdllProxy::Init();
-        KernelBaseProxy::Init();
-        Kernel32Proxy::Init();
-
         State::Instance().activeFgInput = Config::Instance()->FGInput.value_or_default();
         State::Instance().activeFgOutput = Config::Instance()->FGOutput.value_or_default();
         State::Instance().activeFgNvngx = Config::Instance()->FGNvngxReplacement.value_or_default();
@@ -1897,6 +1879,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         if (State::Instance().activeFgInput == FGInput::NvngxFG)
             State::Instance().activeFgOutput = FGOutput::NoFG;
+
+        // Init Kernel proxies
+        NtdllProxy::Init();
+        KernelBaseProxy::Init();
+        Kernel32Proxy::Init();
 
         // Check for Wine
         spdlog::info("");
@@ -2192,6 +2179,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
     case DLL_PROCESS_DETACH:
         State::Instance().isShuttingDown = true;
+        // ExitProcess has already stopped other threads. No DLL unloading, logging,
+        // thread joins or GPU cleanup is safe here; the OS reclaims process resources.
+        if (lpReserved != nullptr)
+            break;
 
         // Unhooking and cleaning stuff causing issues during shutdown.
         // Disabled for now to check if it cause any issues

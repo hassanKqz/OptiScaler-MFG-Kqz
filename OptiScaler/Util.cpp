@@ -498,13 +498,7 @@ std::optional<std::filesystem::path> Util::FindFilePath(const std::filesystem::p
     optiPath /= L"streamline";
     auto normalizedStreamlinePath = optiPath.lexically_normal();
 
-    // Residual-only FG needs the official FG runtime even with full-game FG off.
-    // Keep the existing exclusion for every other library/backend lookup.
-    const bool isDlssgOutput =
-        State::Instance().activeFgOutput == FGOutput::DLSSG ||
-        (fileName == L"nvngx_dlssg.dll" && Config::Instance()->DlssNrEnabled.value_or_default() &&
-         Config::Instance()->DlssNrDeferredDlss.value_or_default() &&
-         Config::Instance()->DlssNrResidualFg.value_or_default());
+    const bool isDlssgOutput = State::Instance().activeFgOutput == FGOutput::DLSSG;
 
     // 1) Direct check in startDir
     std::filesystem::path candidate = startDir / fileName;
@@ -568,7 +562,30 @@ std::optional<std::filesystem::path> Util::FindFilePath(const std::filesystem::p
             // Move up two more levels from 'parent' to reach UE project root but one level for KCD2
             std::filesystem::path gameRoot;
             if (cnt < 2)
-                gameRoot = parent.parent_path().parent_path();
+            {
+                do
+                {
+                    // Check one below Win64, old UE games have binaries here
+                    gameRoot = parent.parent_path();
+
+                    if (std::filesystem::exists(gameRoot / "Binaries") &&
+                        std::filesystem::is_directory(gameRoot / "Binaries"))
+                    {
+                        gameRoot = gameRoot.parent_path();
+                        break;
+                    }
+
+                    // Check two below Win64, newer UE games have binaries here
+                    gameRoot = gameRoot.parent_path();
+
+                    if (std::filesystem::exists(gameRoot / "Binaries") &&
+                        std::filesystem::is_directory(gameRoot / "Binaries"))
+                    {
+                        gameRoot = gameRoot.parent_path();
+                        break;
+                    }
+                } while (false);
+            }
             else
                 gameRoot = parent.parent_path();
 

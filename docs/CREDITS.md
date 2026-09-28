@@ -2,15 +2,23 @@
 
 This fork builds on [Dagherbou/OptiScaler_DLSSNR](https://github.com/Dagherbou/OptiScaler_DLSSNR) and [OptiScaler](https://github.com/optiscaler/OptiScaler). OptiScaler began with [PotatoOfDoom's CyberFSR2](https://github.com/PotatoOfDoom/CyberFSR2).
 
-Colour processing is derived from [RenoDX by clshortfuse](https://github.com/clshortfuse/renodx). See the [RenoDX attribution and licence](../Licenses/RenoDX_ATTRIBUTION.txt) for details.
+Colour processing derives from [clshortfuse's RenoDX](https://github.com/clshortfuse/renodx); see [attribution/licence](../Licenses/RenoDX_ATTRIBUTION.txt).
+
+Integrations include hhkbble's multipass/composition, [y4my4my4m's Vulkan work](NR-VULKAN.md) and [cmh1448's motion metadata](NR-MOTION-METADATA.md). Linked notes identify source commits and test limits.
+
+This variant restores the built-in [Ada MFG work and attribution](RTX40-MFG.md), derived from y4my4my4m and the earlier fork under GPL-3.0.
+
+## RTX 40 MFG unlock
+
+The built-in RTX 40 multi frame generation unlock is adapted from [y4my4my4m's fork](https://github.com/y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG) (GPL-3.0). The provider discovery, the Streamline plugin frame-ceiling patch, the software frame pacing option and the PTX temporal fix are adapted from [KleberMotta's fork](https://github.com/KleberMotta/OptiScaler-DLSS5-MFG-RTX40) (MIT), a port of the MFG Unlock ReShade addon by [Dreamt](https://github.com/ImDreamt/MFGAdaUnlock-RenoDx) and [mavismmg](https://github.com/mavismmg/MFGAdaUnlock-RenoDx). The technique originates from [dashdogy's RTX40MFG-Unlock](https://github.com/dashdogy/RTX40MFG-Unlock). See [RTX40-MFG.md](RTX40-MFG.md) and the [licences](../Licenses/MFGUnlock_LICENSE.txt).
 
 ## Fork contributors
+
+- [Yuri Grib / @BeliyG3](https://github.com/BeliyG3) for the MIT-licensed peripheral spatial mapping adapted from [Optimizer FPS for DLSS5](https://github.com/BeliyG3/optimizer-fps-dlss5/tree/64902dd6a02460e5f6b778504ec2a4005faf4d9c). See [spatial compression](NR-SPATIAL-COMPRESSION.md) for integration details.
 
 - [@LorisPicariello](https://github.com/LorisPicariello) for investigating and testing RDR2's Finished Picture NR / OptiFG interaction, and for [PR #70](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/pull/70), which informed the rewritten finished-picture ordering and subsequent queue-safety work.
 
 ## OptiScaler contributors
-
-These credits are retained from the original OptiScaler README:
 
 - @PotatoOfDoom for CyberFSR2.
 - @Artur for DLSS Enabler and help with the NVNGX API.
@@ -25,6 +33,6 @@ This project uses [FreeType](https://gitlab.freedesktop.org/freetype/freetype), 
 
 ## Upstream sponsorship
 
-The original OptiScaler project credits [SignPath.io](https://signpath.io/) for Windows code signing and the [SignPath Foundation](https://signpath.org/) for its certificate.
+Upstream credits [SignPath.io](https://signpath.io/) for Windows code signing and the [SignPath Foundation](https://signpath.org/) for its certificate.
 
-To support the original developers: [cdozdil on GitHub Sponsors](https://github.com/sponsors/cdozdil?frequency=one-time) and [nitec on Buy Me a Coffee](https://buymeacoffee.com/nitec).
+Support upstream: [cdozdil](https://github.com/sponsors/cdozdil?frequency=one-time) and [nitec](https://buymeacoffee.com/nitec).

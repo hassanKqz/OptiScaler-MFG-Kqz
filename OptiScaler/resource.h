@@ -2,14 +2,6 @@
 // Microsoft Visual C++ generated include file.
 // Used by OptiScaler.rc
 //
-#ifdef _DEBUG
-#define VER_BUILD_DATE "Debug Build"
-#define VER_BUILD_COMMIT "Debug"
-#else
-#include "resource_build_date.h"
-#include "resource_build_commit.h"
-#endif // !_DEBUG
-
 #define VS_VERSION_INFO 1
 
 // Next default values for new objects
@@ -26,12 +18,12 @@
 #define STRINGIZE_(s) #s
 #define STRINGIZE(s) STRINGIZE_(s)
 
-#define VER_MAJOR_VERSION 0
-#define VER_MINOR_VERSION 7
-#define VER_HOTFIX_VERSION 7
-#define VER_BUILD_NUMBER 0
+#define VER_MAJOR_VERSION 10
+#define VER_MINOR_VERSION 0
+#define VER_HOTFIX_VERSION 0
+#define VER_BUILD_NUMBER 1
 
-// #define VER_DEV_RELEASE
+#define VER_DEV_RELEASE
 // #define VER_PRE_RELEASE
 
 #define VER_FILE_VERSION VER_MAJOR_VERSION, VER_MINOR_VERSION, VER_HOTFIX_VERSION, VER_BUILD_NUMBER
@@ -40,6 +32,15 @@
 #define OPTI_VERSION STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION)
 
 #define VER_PRODUCT_VERSION VER_FILE_VERSION
+
+#ifdef OPTISCALER_BUILD_METADATA
+#ifdef _DEBUG
+#define VER_BUILD_DATE "Debug Build"
+#define VER_BUILD_COMMIT "Debug"
+#else
+#include "resource_build_date.h"
+#include "resource_build_commit.h"
+#endif // !_DEBUG
 
 #ifdef VER_DEV_RELEASE
 #define VER_PRODUCT_VERSION_STR                                                                                        \
@@ -52,4 +53,5 @@
     STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION) "-final (" VER_BUILD_COMMIT ")"
 #endif // VER_PRE_RELEASE
 
-#define VER_PRODUCT_NAME "OptiScaler-MFG v" VER_PRODUCT_VERSION_STR
+#define VER_PRODUCT_NAME "OptiScaler v" VER_PRODUCT_VERSION_STR
+#endif // OPTISCALER_BUILD_METADATA

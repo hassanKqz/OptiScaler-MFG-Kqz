@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "XeFG_Dx12.h"
+
+#include <hudfix/Hudfix_Dx11.h>
 #include <hudfix/Hudfix_Dx12.h>
+
 #include <menu/menu_overlay_dx.h>
 #include <resource_tracking/ResTrack_dx12.h>
 
@@ -36,26 +39,9 @@ void XeFG_Dx12::xefgLogCallback(const char* message, xefg_swapchain_logging_leve
 
 bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
 {
-    if (device == nullptr)
-        return false;
-
     if (XeFGProxy::Module() == nullptr && !XeFGProxy::InitXeFG())
     {
         LOG_ERROR("XeFG proxy can't find libxess_fg.dll!");
-        return false;
-    }
-
-    if (XeFGProxy::GetProperties() == nullptr || XeFGProxy::D3D12InitFromSwapChainDesc() == nullptr ||
-        XeFGProxy::D3D12GetSwapChainPtr() == nullptr)
-    {
-        LOG_ERROR("XeFG runtime is missing required swapchain exports");
-        return false;
-    }
-
-    auto createContext = XeFGProxy::D3D12CreateContext();
-    if (createContext == nullptr)
-    {
-        LOG_ERROR("XeFG runtime is missing xefgSwapChainD3D12CreateContext");
         return false;
     }
 
@@ -67,63 +53,53 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
 
     do
     {
-        auto result = createContext(device, &_swapChainContext);
+        auto result = XeFGProxy::D3D12CreateContext()(device, &_swapChainContext);
 
-        if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS || _swapChainContext == nullptr)
+        if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
         {
             LOG_ERROR("D3D12CreateContext error: {} ({})", magic_enum::enum_name(result), (UINT) result);
             return false;
         }
 
         LOG_INFO("XeFG context created");
+        result = XeFGProxy::SetLoggingCallback()(_swapChainContext, XEFG_SWAPCHAIN_LOGGING_LEVEL_DEBUG, xefgLogCallback,
+                                                 nullptr);
 
-        if (auto setLoggingCallback = XeFGProxy::SetLoggingCallback(); setLoggingCallback != nullptr)
+        if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
         {
-            result = setLoggingCallback(_swapChainContext, XEFG_SWAPCHAIN_LOGGING_LEVEL_DEBUG, xefgLogCallback, nullptr);
-
-            if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
-                LOG_WARN("SetLoggingCallback error: {} ({})", magic_enum::enum_name(result), (UINT) result);
+            LOG_ERROR("SetLoggingCallback error: {} ({})", magic_enum::enum_name(result), (UINT) result);
         }
 
 #ifndef LOW_LATENCY_INPUTS
-        // Force fakenvapi to create XeLL for us when the optional latency path is available.
+        // Force fakenvapi to create XeLL for us
         if (fakenvapi::forceMode(device, LowLatencyMode::XeLL))
         {
-            auto xellContext = static_cast<xell_context_handle_t>(fakenvapi::getCurrentContext());
-            auto setSleepMode = XeLLProxy::SetSleepMode();
-            auto setLatencyReduction = XeFGProxy::SetLatencyReduction();
+            xell_sleep_params_t sleepParams = {};
+            sleepParams.bLowLatencyMode = true;
+            sleepParams.bLowLatencyBoost = false;
+            sleepParams.minimumIntervalUs = 0;
 
-            if (xellContext != nullptr && setSleepMode != nullptr && setLatencyReduction != nullptr)
+            auto xellResult =
+                XeLLProxy::SetSleepMode()((xell_context_handle_t) fakenvapi::getCurrentContext(), &sleepParams);
+            if (xellResult != XELL_RESULT_SUCCESS)
             {
-                xell_sleep_params_t sleepParams = {};
-                sleepParams.bLowLatencyMode = true;
-                sleepParams.bLowLatencyBoost = false;
-                sleepParams.minimumIntervalUs = 0;
-
-                auto xellResult = setSleepMode(xellContext, &sleepParams);
-                if (xellResult == XELL_RESULT_SUCCESS)
-                {
-                    result = setLatencyReduction(_swapChainContext, xellContext);
-                    if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
-                        LOG_WARN("SetLatencyReduction error: {} ({})", magic_enum::enum_name(result), (UINT) result);
-                }
-                else
-                {
-                    LOG_WARN("SetSleepMode error: {} ({})", magic_enum::enum_name(xellResult), (UINT) xellResult);
-                }
+                LOG_ERROR("SetSleepMode error: {} ({})", magic_enum::enum_name(xellResult), (UINT) xellResult);
+                return false;
             }
-            else
+
+            result = XeFGProxy::SetLatencyReduction()(_swapChainContext, fakenvapi::getCurrentContext());
+
+            if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
             {
-                LOG_WARN("XeLL latency reduction unavailable; continuing without it");
+                LOG_ERROR("SetLatencyReduction error: {} ({})", magic_enum::enum_name(result), (UINT) result);
+                return false;
             }
         }
 #else
-        InputXeLL::xell_input_handle_t localXellContext = nullptr;
-        auto setLatencyReduction = XeFGProxy::SetLatencyReduction();
-        if (setLatencyReduction != nullptr && InputXeLL::D3D12CreateContext(device, &localXellContext) == XELL_RESULT_SUCCESS &&
-            localXellContext != nullptr)
+        InputXeLL::xell_input_handle_t localXellContext;
+        if (InputXeLL::D3D12CreateContext(device, &localXellContext) == XELL_RESULT_SUCCESS)
         {
-            localXellContext->inputContext.localContext = true;
+            localXellContext->inputContext.localContext = true; // We created this context
 
             xell_sleep_params_t sleepParams = {};
             sleepParams.bLowLatencyMode = true;
@@ -131,22 +107,27 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
             sleepParams.minimumIntervalUs = 0;
 
             auto xellResult = InputXeLL::SetSleepMode(localXellContext, &sleepParams);
-            if (xellResult == XELL_RESULT_SUCCESS)
+            if (xellResult != XELL_RESULT_SUCCESS)
             {
-                result = setLatencyReduction(_swapChainContext, (xell_context_handle_t) localXellContext);
-                if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
-                    LOG_WARN("SetLatencyReduction error: {} ({})", magic_enum::enum_name(result), (UINT) result);
+                LOG_ERROR("SetSleepMode error: {} ({})", magic_enum::enum_name(xellResult), (UINT) xellResult);
+                return false;
             }
-            else
+
+            result = XeFGProxy::SetLatencyReduction()(_swapChainContext, (xell_context_handle_t) localXellContext);
+
+            if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
             {
-                LOG_WARN("SetSleepMode error: {} ({})", magic_enum::enum_name(xellResult), (UINT) xellResult);
+                LOG_ERROR("SetLatencyReduction error: {} ({})", magic_enum::enum_name(result), (UINT) result);
+                return false;
             }
-        }
-        else
-        {
-            LOG_WARN("XeLL unavailable; continuing without latency reduction");
         }
 #endif
+        else
+        {
+            LOG_ERROR("Couldn't create XeLL");
+            return false;
+        }
+
         createResult = true;
 
     } while (false);
@@ -190,14 +171,10 @@ bool XeFG_Dx12::DestroySwapchainContext()
 
     if (_swapChainContext != nullptr && !State::Instance().isShuttingDown)
     {
-        auto destroy = XeFGProxy::Destroy();
-        if (destroy == nullptr)
-            return false;
-
         auto context = _swapChainContext;
         _swapChainContext = nullptr;
 
-        auto result = destroy(context);
+        auto result = XeFGProxy::Destroy()(context);
 
         LOG_INFO("Destroy result: {} ({})", magic_enum::enum_name(result), (UINT) result);
 
@@ -270,18 +247,9 @@ xefg_swapchain_d3d12_resource_data_t XeFG_Dx12::GetResourceData(FG_ResourceType 
 bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, DXGI_SWAP_CHAIN_DESC* desc,
                                 IDXGISwapChain** swapChain, bool readyToRelease)
 {
-    if (factory == nullptr || cmdQueue == nullptr || desc == nullptr || swapChain == nullptr || *swapChain != nullptr)
-        return false;
-
     if (State::Instance().currentFGSwapchain != nullptr && _hwnd == desc->OutputWindow)
     {
-        const bool preserveSwapchain = Config::Instance()->FGPreserveSwapChain.value_or_default();
-        const bool sameDesc = _haveSwapChainDesc && _swapChainDesc.BufferCount == desc->BufferCount &&
-                              _swapChainDesc.Width == desc->BufferDesc.Width &&
-                              _swapChainDesc.Height == desc->BufferDesc.Height &&
-                              _swapChainDesc.Format == desc->BufferDesc.Format && _swapChainDesc.Flags == desc->Flags;
-
-        if (preserveSwapchain && _swapChainContext != nullptr && sameDesc)
+        if (Config::Instance()->FGPreserveSwapChain.value_or_default())
         {
             LOG_WARN("FG swapchain already created for the same output window!");
             auto result = State::Instance().currentFGSwapchain->ResizeBuffers(
@@ -292,19 +260,10 @@ bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQu
             return result;
         }
         // Game is creating new swapchain without releasing old one,
-        // we need to release it to avoid errors.
-        // A preserved swapchain is also released when the game asks for different descriptors or
-        // when the XeFG context is gone: RE Engine recreates the swapchain while loading and
-        // reusing the preserved one leaves the XeFG state desynced.
-        else if (readyToRelease || preserveSwapchain)
+        // we need to release it to avoid errors
+        else if (readyToRelease)
         {
-            if (preserveSwapchain)
-                LOG_WARN("Preserved FG swapchain can't be reused for the same output window "
-                         "(context: {}, desc match: {}), releasing and recreating",
-                         _swapChainContext != nullptr, sameDesc);
-            else
-                LOG_INFO("Releasing old swapchain");
-
+            LOG_INFO("Releasing old swapchain");
             ReleaseSwapchain(_hwnd);
 
             // Not sure why but XeFG sometimes doesn't release the swapchain properly
@@ -409,7 +368,7 @@ bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQu
 
     int intTarget = _maxInterpolationCount;
 
-    // Older runtimes use the creation limit; newer runtimes can change it dynamically.
+    // For old libxess_fg versions we use max to control interpolation count
     if (XeFGProxy::SetNumInterpolatedFrames() == nullptr)
         intTarget = Config::Instance()->FGXeFGInterpolationCount.value_or_default();
 
@@ -422,6 +381,9 @@ bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQu
 
     if (_framesToInterpolate > intTarget)
         Config::Instance()->FGXeFGInterpolationCount.set_volatile_value(intTarget);
+
+    if (Config::Instance()->ForceXeLL.value_or_default())
+        params.maxInterpolatedFrames = 1;
 
     params.maxInterpolatedFrames = intTarget;
 
@@ -456,17 +418,9 @@ bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQu
     ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
 #endif // !DONT_USE_XMX
 
-    auto initSwapchain = XeFGProxy::D3D12InitFromSwapChainDesc();
-    auto getSwapchain = XeFGProxy::D3D12GetSwapChainPtr();
-    auto setEnabled = XeFGProxy::SetEnabled();
-    if (initSwapchain == nullptr || getSwapchain == nullptr || setEnabled == nullptr)
-    {
-        LOG_ERROR("XeFG runtime is missing swapchain creation exports");
-        return false;
-    }
-
     xefg_swapchain_result_t result;
-    result = initSwapchain(_swapChainContext, hwnd, &scDesc, &fsDesc, realQueue, factory12, &params);
+    result = XeFGProxy::D3D12InitFromSwapChainDesc()(_swapChainContext, hwnd, &scDesc, &fsDesc, realQueue, factory12,
+                                                     &params);
 
     if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
     {
@@ -491,8 +445,6 @@ bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQu
     _gameCommandQueue = realQueue;
     _swapChain = *swapChain;
     _hwnd = hwnd;
-    _swapChainDesc = scDesc;
-    _haveSwapChainDesc = true;
 
     return true;
 }
@@ -501,17 +453,9 @@ bool XeFG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
                                  DXGI_SWAP_CHAIN_DESC1* desc, DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
                                  IDXGISwapChain1** swapChain, bool readyToRelease)
 {
-    if (factory == nullptr || cmdQueue == nullptr || desc == nullptr || swapChain == nullptr || *swapChain != nullptr)
-        return false;
-
     if (State::Instance().currentFGSwapchain != nullptr && _hwnd == hwnd)
     {
-        const bool preserveSwapchain = Config::Instance()->FGPreserveSwapChain.value_or_default();
-        const bool sameDesc = _haveSwapChainDesc && _swapChainDesc.BufferCount == desc->BufferCount &&
-                              _swapChainDesc.Width == desc->Width && _swapChainDesc.Height == desc->Height &&
-                              _swapChainDesc.Format == desc->Format && _swapChainDesc.Flags == desc->Flags;
-
-        if (preserveSwapchain && _swapChainContext != nullptr && sameDesc)
+        if (Config::Instance()->FGPreserveSwapChain.value_or_default())
         {
             LOG_WARN("FG swapchain already created for the same output window!");
             auto result = State::Instance().currentFGSwapchain->ResizeBuffers(
@@ -521,19 +465,10 @@ bool XeFG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
             return result;
         }
         // Game is creating new swapchain without releasing old one,
-        // we need to release it to avoid errors.
-        // A preserved swapchain is also released when the game asks for different descriptors or
-        // when the XeFG context is gone: RE Engine recreates the swapchain while loading and
-        // reusing the preserved one leaves the XeFG state desynced.
-        else if (readyToRelease || preserveSwapchain)
+        // we need to release it to avoid errors
+        else if (readyToRelease)
         {
-            if (preserveSwapchain)
-                LOG_WARN("Preserved FG swapchain can't be reused for the same output window "
-                         "(context: {}, desc match: {}), releasing and recreating",
-                         _swapChainContext != nullptr, sameDesc);
-            else
-                LOG_INFO("Releasing old swapchain");
-
+            LOG_INFO("Releasing old swapchain");
             ReleaseSwapchain(_hwnd);
 
             // Not sure why but XeFG sometimes doesn't release the swapchain properly
@@ -600,7 +535,7 @@ bool XeFG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
 
     int intTarget = _maxInterpolationCount;
 
-    // Older runtimes use the creation limit; newer runtimes can change it dynamically.
+    // For old libxess_fg versions we use max to control interpolation count
     if (XeFGProxy::SetNumInterpolatedFrames() == nullptr)
         intTarget = Config::Instance()->FGXeFGInterpolationCount.value_or_default();
 
@@ -613,6 +548,9 @@ bool XeFG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
 
     if (_framesToInterpolate > intTarget)
         Config::Instance()->FGXeFGInterpolationCount.set_volatile_value(intTarget);
+
+    if (Config::Instance()->ForceXeLL.value_or_default())
+        params.maxInterpolatedFrames = 1;
 
     params.maxInterpolatedFrames = intTarget;
 
@@ -676,8 +614,6 @@ bool XeFG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
     _gameCommandQueue = realQueue;
     _swapChain = *swapChain;
     _hwnd = hwnd;
-    _swapChainDesc = *desc;
-    _haveSwapChainDesc = true;
 
     return true;
 }
@@ -1219,6 +1155,7 @@ void XeFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
 
         state.clearCapturedHudlesses = true;
         Hudfix_Dx12::ResetCounters();
+        Hudfix_Dx11::ResetCounters();
     }
 
     if (state.fgChanged)
@@ -1228,6 +1165,7 @@ void XeFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
         state.fgChanged = false;
 
         Hudfix_Dx12::ResetCounters();
+        Hudfix_Dx11::ResetCounters();
 
         // Pause for 10 frames
         UpdateTarget();
@@ -1403,7 +1341,6 @@ bool XeFG_Dx12::Present()
     {
         auto ui = GetResource(FG_ResourceType::UIColor, fIndex);
         if (ui && (ui->validity == FG_ResourceValidity::UntilPresent ||
-                   ui->validity == FG_ResourceValidity::JustTrackCmdlist ||
                    ui->validity == FG_ResourceValidity::UntilPresentFromDispatch))
         {
             LOG_DEBUG("UI[{}] resource: {:X}, copy: {}", fIndex, (size_t) ui->resource, (size_t) ui->copy);
@@ -1439,7 +1376,6 @@ bool XeFG_Dx12::Present()
         {
             auto hudless = GetResource(FG_ResourceType::HudlessColor, fIndex);
             if (hudless && (hudless->validity == FG_ResourceValidity::UntilPresent ||
-                            hudless->validity == FG_ResourceValidity::JustTrackCmdlist ||
                             hudless->validity == FG_ResourceValidity::UntilPresentFromDispatch))
             {
                 LOG_DEBUG("Hudless[{}] resource: {:X}, copy: {}", fIndex, (size_t) hudless->resource,
@@ -1684,8 +1620,7 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
         _noHudless[fIndex] = false;
 
     if ((type == FG_ResourceType::Depth || type == FG_ResourceType::Velocity) ||
-        (fResource->validity != FG_ResourceValidity::UntilPresent &&
-         fResource->validity != FG_ResourceValidity::JustTrackCmdlist))
+        fResource->validity != FG_ResourceValidity::UntilPresent)
     {
         fResource->validity = (fResource->validity != FG_ResourceValidity::ValidNow || willFlip)
                                   ? FG_ResourceValidity::UntilPresent

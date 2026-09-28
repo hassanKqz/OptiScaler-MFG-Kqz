@@ -1,6 +1,5 @@
 #include "pch.h"
 #include "NvApiHooks.h"
-#include <dlssnr/DlssNrNative.h>
 #include <NvApiDriverSettings.h>
 
 #include "State.h"
@@ -69,7 +68,7 @@ NvAPI_Status __stdcall NvApiHooks::hkNvAPI_DRS_GetSetting(NvDRSSessionHandle hSe
     {
         constexpr NvU32 streamlineOverrideId = 0x10E41E06;
         if (settingId == streamlineOverrideId && State::Instance().gameName == "KCD2" &&
-            State::Instance().activeFgOutput == FGOutput::DLSSG && !State::Instance().externalFrameGeneration)
+            State::Instance().activeFgOutput == FGOutput::DLSSG)
         {
             // Keep the tested local Streamline stack. This changes the query
             // result for this process only, not the saved NVIDIA driver profile.
@@ -199,13 +198,6 @@ NvAPI_Status __stdcall NvApiHooks::hkNvAPI_DRS_GetSetting(NvDRSSessionHandle hSe
 
 void* __stdcall NvApiHooks::hkNvAPI_QueryInterface(unsigned int InterfaceId)
 {
-    // Native Reflex, flip metering, architecture/capability queries and driver
-    // presets belong to the external FG owner in this mode. Returning null for
-    // a Reflex query would disable it, so forward to the real function table.
-    if (State::Instance().externalFrameGeneration)
-        return DlssNrNative::WrapNvapi(InterfaceId,
-                                       o_NvAPI_QueryInterface ? o_NvAPI_QueryInterface(InterfaceId) : nullptr);
-
     if (!o_NvAPI_QueryInterface)
         if (Config::Instance()->UseFakenvapi.value_or_default())
             o_NvAPI_QueryInterface = (PFN_NvApi_QueryInterface) fakenvapi::queryInterface;
@@ -271,7 +263,7 @@ void* __stdcall NvApiHooks::hkNvAPI_QueryInterface(unsigned int InterfaceId)
 
     // LOG_DEBUG("counter: {} functionPointer: {:X}", qiCounter, (size_t)functionPointer);
 
-    return DlssNrNative::WrapNvapi(InterfaceId, functionPointer);
+    return functionPointer;
 }
 
 // Requires HMODULE to make sure nvapi is loaded before calling this function

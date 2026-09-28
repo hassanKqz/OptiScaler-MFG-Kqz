@@ -1,7 +1,9 @@
 // Runs the production SPIR-V encode/resolve on a real Vulkan device. No game or NR DLL needed.
-// cl /std:c++20 /EHsc /Iexternal/vulkan/include tests/nr_vulkan_shader_smoke.cpp
+// cl /std:c++20 /EHsc /IOptiScaler /Iexternal/vulkan/include /Iexternal/nvngx_dlss_sdk
+//    /Iexternal/spdlog/include tests/nr_vulkan_shader_smoke.cpp
 //    /link OptiScaler/library/vulkan/vulkan-1.lib
 #include <vulkan/vulkan.h>
+#include "../OptiScaler/dlssnr/DlssNr_Image_Vk.h"
 #include "../OptiScaler/shaders/dlssnr/DlssNr_Common.h"
 #include <array>
 #include <vector>
@@ -61,24 +63,22 @@ try
     };
     // The active rectangle is an odd-sized Balanced input inside a padded allocation.
     constexpr uint32_t width = 1507, height = 847, allocationWidth = 1536, allocationHeight = 864;
-    struct Image { VkImage image {}; VkImageView view {}; VkDeviceMemory memory {}; };
-    std::array<Image, 6> images {}; // source, proxy, keep, model, result, dummy
+    std::array<DlssNr::ImageVk, 6> images {}; // source, proxy, keep, model, result, dummy
     for (auto& image : images)
     {
-        VkImageCreateInfo ci { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-        ci.imageType = VK_IMAGE_TYPE_2D; ci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-        ci.extent = { allocationWidth, allocationHeight, 1 }; ci.mipLevels = ci.arrayLayers = 1;
-        ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-        ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        check(vkCreateImage(device, &ci, nullptr, &image.image));
-        VkMemoryRequirements req {}; vkGetImageMemoryRequirements(device, image.image, &req);
-        image.memory = allocate(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        check(vkBindImageMemory(device, image.image, image.memory, 0));
-        VkImageViewCreateInfo vi { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-        vi.image = image.image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = ci.format;
-        vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        check(vkCreateImageView(device, &vi, nullptr, &image.view));
+        if (!image.Ensure(device, pd, 1, 1, VK_FORMAT_R16G16B16A16_SFLOAT))
+            throw std::runtime_error("NR placeholder allocation failed");
+        for (auto format : { VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT,
+                             VK_FORMAT_R32G32B32A32_SFLOAT })
+        {
+            if (!image.Ensure(device, pd, allocationWidth, allocationHeight, format) ||
+                image.info.Width != allocationWidth || image.info.Height != allocationHeight ||
+                image.info.Format != format || image.layout != VK_IMAGE_LAYOUT_UNDEFINED)
+                throw std::runtime_error("NR image allocation/format replacement failed");
+            const auto handle = image.info.Image;
+            if (!image.Ensure(device, pd, allocationWidth, allocationHeight, format) || image.info.Image != handle)
+                throw std::runtime_error("Unchanged NR image was reallocated");
+        }
     }
     struct Buffer { VkBuffer buffer {}; VkDeviceMemory memory {}; void* mapped {}; };
     auto buffer = [&](VkDeviceSize size, VkBufferUsageFlags usage) {
@@ -134,7 +134,7 @@ try
             writes[b] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET }; writes[b].dstSet = sets[pass];
             writes[b].dstBinding = b; writes[b].descriptorCount = 1; writes[b].descriptorType = bindings[b].descriptorType;
             if (!b) writes[b].pBufferInfo = &bi;
-            else { ii[b - 1] = { sampler, images[(pass ? resolve : encode)[b - 1]].view, VK_IMAGE_LAYOUT_GENERAL }; writes[b].pImageInfo = &ii[b - 1]; }
+            else { ii[b - 1] = { sampler, images[(pass ? resolve : encode)[b - 1]].info.ImageView, VK_IMAGE_LAYOUT_GENERAL }; writes[b].pImageInfo = &ii[b - 1]; }
         }
         vkUpdateDescriptorSets(device, 8, writes.data(), 0, nullptr);
     }
@@ -151,9 +151,9 @@ try
         VkImageMemoryBarrier barrier { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL; barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = images[i].image; barrier.subresourceRange = range;
+        barrier.image = images[i].info.Image; barrier.subresourceRange = range;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-        vkCmdClearColorImage(cmd, images[i].image, VK_IMAGE_LAYOUT_GENERAL, i == 0 ? &color : &sentinel, 1, &range);
+        vkCmdClearColorImage(cmd, images[i].info.Image, VK_IMAGE_LAYOUT_GENERAL, i == 0 ? &color : &sentinel, 1, &range);
     }
     auto memoryBarrier = [&](VkAccessFlags src, VkAccessFlags dst) {
         VkMemoryBarrier b { VK_STRUCTURE_TYPE_MEMORY_BARRIER }; b.srcAccessMask = src; b.dstAccessMask = dst;
@@ -169,7 +169,7 @@ try
     }
     VkBufferImageCopy copy {}; copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     copy.imageExtent = { allocationWidth, allocationHeight, 1 };
-    vkCmdCopyImageToBuffer(cmd, images[4].image, VK_IMAGE_LAYOUT_GENERAL, readback.buffer, 1, &copy);
+    vkCmdCopyImageToBuffer(cmd, images[4].info.Image, VK_IMAGE_LAYOUT_GENERAL, readback.buffer, 1, &copy);
     memoryBarrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
     check(vkEndCommandBuffer(cmd));
     VkSubmitInfo submit { VK_STRUCTURE_TYPE_SUBMIT_INFO }; submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd;
@@ -185,11 +185,103 @@ try
                     throw std::runtime_error("Pixel mismatch at " + std::to_string(x) + "," + std::to_string(y) + " got " + std::to_string(got));
             }
     std::cout << "PASS: production Vulkan encode/resolve, 1507x847 active inside 1536x864, RGBA preserved, padding untouched\n";
+    // Reuse two unchanged bindings for a 30-pass clamp chain, as the production model loop does.
+    constants.Mode = DlssNrMode_ClampProxy;
+    for (auto& uniform : uniforms) std::memcpy(uniform.mapped, &constants, sizeof(constants));
+    for (uint32_t pass=0; pass<2; ++pass)
+    {
+        VkDescriptorImageInfo source {sampler, images[pass ? 1 : 4].info.ImageView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo target {sampler, images[pass ? 4 : 1].info.ImageView, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet writes[2] {};
+        for (auto& write : writes) { write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write.dstSet=sets[pass]; write.descriptorCount=1; }
+        writes[0].dstBinding=1; writes[0].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo=&source;
+        writes[1].dstBinding=5; writes[1].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[1].pImageInfo=&target;
+        vkUpdateDescriptorSets(device,2,writes,0,nullptr);
+    }
+    const VkClearColorValue inputs[] = {{{-0.2f,1.2f,0.3f,0.25f}}, {{INFINITY,-INFINITY,NAN,0.75f}}};
+    const VkClearColorValue expected[] = {{{0,1,0.3f,0.25f}}, {{0.5f,0.5f,0.5f,0.75f}}};
+    for (uint32_t sample=0; sample<2; ++sample)
+    {
+        check(vkResetCommandPool(device,commandPool,0));
+        check(vkBeginCommandBuffer(cmd,&begin));
+        vkCmdClearColorImage(cmd,images[4].info.Image,VK_IMAGE_LAYOUT_GENERAL,&inputs[sample],1,&range);
+        memoryBarrier(VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);
+        for (uint32_t pass=0; pass<30; ++pass)
+        {
+            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipelineLayout,0,1,&sets[pass%2],0,nullptr);
+            vkCmdDispatch(cmd,(width+7)/8,(height+7)/8,1);
+            memoryBarrier(VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+        }
+        vkCmdCopyImageToBuffer(cmd,images[4].info.Image,VK_IMAGE_LAYOUT_GENERAL,readback.buffer,1,&copy);
+        memoryBarrier(VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_HOST_READ_BIT);
+        check(vkEndCommandBuffer(cmd));
+        check(vkQueueSubmit(queue,1,&submit,VK_NULL_HANDLE)); check(vkQueueWaitIdle(queue));
+        for (uint32_t y=0; y<height; ++y)
+            for (uint32_t x=0; x<width; ++x)
+                for (uint32_t c=0; c<4; ++c)
+                {
+                    const float got=pixels[((size_t)y*allocationWidth+x)*4+c];
+                    if (!std::isfinite(got) || std::abs(got-expected[sample].float32[c])>0.0001f)
+                        throw std::runtime_error("Vulkan interpass clamp mismatch");
+                }
+    }
+    std::cout << "PASS: production Vulkan 30-pass clamp chain, finite RGB, bounded range, identity and alpha\n";
+    // Execute the automatic exposure path with the production SPIR-V and its actual binding layout.
+    constants = {};
+    constants.Mode = DlssNrMode_Meter;
+    constants.Width = constants.Height = 64;
+    std::memcpy(uniforms[0].mapped, &constants, sizeof(constants));
+    constants.Mode = DlssNrMode_AutoExposure;
+    constants.Width = constants.Height = 1;
+    constants.PreExposure = 8;
+    constants.ExposureSourceWidth = allocationWidth;
+    constants.ExposureSourceHeight = allocationHeight;
+    std::memcpy(uniforms[1].mapped, &constants, sizeof(constants));
+    for (unsigned pass = 0; pass < 2; ++pass)
+    {
+        VkDescriptorImageInfo source { sampler, images[pass ? 1 : 0].info.ImageView, VK_IMAGE_LAYOUT_GENERAL };
+        VkDescriptorImageInfo target { sampler, images[pass ? 4 : 1].info.ImageView, VK_IMAGE_LAYOUT_GENERAL };
+        VkWriteDescriptorSet writes[2] {};
+        for (unsigned n = 0; n < 2; ++n)
+        {
+            writes[n].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[n].dstSet = sets[pass];
+            writes[n].dstBinding = n ? 5 : 1;
+            writes[n].descriptorCount = 1;
+            writes[n].descriptorType = n ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[n].pImageInfo = n ? &target : &source;
+        }
+        vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    }
+    check(vkResetCommandPool(device, commandPool, 0));
+    check(vkBeginCommandBuffer(cmd, &begin));
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    for (unsigned pass = 0; pass < 2; ++pass)
+    {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &sets[pass], 0, nullptr);
+        vkCmdDispatch(cmd, pass ? 1 : 64, pass ? 1 : 64, 1);
+        memoryBarrier(VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+    }
+    vkCmdCopyImageToBuffer(cmd, images[4].info.Image, VK_IMAGE_LAYOUT_GENERAL, readback.buffer, 1, &copy);
+    memoryBarrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+    check(vkEndCommandBuffer(cmd));
+    check(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE));
+    check(vkQueueWaitIdle(queue));
+    const float white = (0.25f * 0.2126f + 0.5f * 0.7152f + 0.75f * 0.0722f) * 0.82f / 0.18f;
+    if (!std::isfinite(pixels[0]) || std::abs(pixels[0] - white) > 0.001f)
+        throw std::runtime_error("Vulkan automatic exposure mismatch");
+    std::cout << "PASS: production Vulkan automatic exposure and pre-exposure normalization\n";
     vkDestroyCommandPool(device, commandPool, nullptr); vkDestroyDescriptorPool(device, pool, nullptr);
     vkDestroySampler(device, sampler, nullptr); vkDestroyPipeline(device, pipeline, nullptr);
     vkDestroyShaderModule(device, shader, nullptr); vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(device, layout, nullptr);
-    for (auto& image : images) { vkDestroyImageView(device, image.view, nullptr); vkDestroyImage(device, image.image, nullptr); vkFreeMemory(device, image.memory, nullptr); }
+    for (auto& image : images)
+    {
+        image.Destroy(device);
+        if (image.Valid() || image.info.Image || image.memory || image.layout != VK_IMAGE_LAYOUT_UNDEFINED)
+            throw std::runtime_error("NR image destruction left stale metadata");
+    }
     for (auto b : { uniforms[0], uniforms[1], readback }) { vkUnmapMemory(device, b.memory); vkDestroyBuffer(device, b.buffer, nullptr); vkFreeMemory(device, b.memory, nullptr); }
     vkDestroyDevice(device, nullptr); vkDestroyInstance(instance, nullptr);
     return 0;
